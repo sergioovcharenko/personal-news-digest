@@ -198,13 +198,67 @@ def telegram(method: str, payload: dict):
         raise RuntimeError(data.get("description", "Telegram error"))
     return data.get("result")
 
-def send(text: str, chat_id: str | int = CHAT_ID, parse_mode: str | None = None):
+def menu_keyboard():
+    """Real Telegram inline buttons, distinct from a full Telegram Mini App."""
+    return {"inline_keyboard": [
+        [{"text": "📰 Отримати новини", "callback_data": "news"},
+         {"text": "📚 Теми", "callback_data": "topics"}],
+        [{"text": "🔗 Джерела", "callback_data": "sources"},
+         {"text": "ℹ️ Довідка", "callback_data": "help"}],
+    ]}
+
+
+def send(text: str, chat_id: str | int = CHAT_ID,
+         parse_mode: str | None = None, reply_markup: dict | None = None):
     if not chat_id:
         raise RuntimeError("TELEGRAM_CHAT_ID is missing")
     payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
     if parse_mode:
         payload["parse_mode"] = parse_mode
+    if reply_markup:
+        payload["reply_markup"] = reply_markup
     return telegram("sendMessage", payload)
+
+
+def show_menu(chat_id):
+    return send(
+        "📰 Daily All News\\n\\n"
+        "Особистий огляд новин України та світу. "
+        "Один дайджест о 08:00 і 20:00 за Києвом. "
+        "Заголовки іноземних видань перекладаються українською.\\n\\n"
+        "Оберіть дію:",
+        chat_id, reply_markup=menu_keyboard(),
+    )
+
+
+def show_topics(chat_id):
+    text = "📚 Теми твого дайджесту:\\n\\n" + "\\n".join(
+        f"{TOPIC_ICONS.get(name, '•')} {name}" for name in TOPICS
+    )
+    return send(text, chat_id, reply_markup=menu_keyboard())
+
+
+def show_sources(chat_id):
+    return send(
+        "🔗 Джерела: Google News RSS, BBC, TechCrunch і BleepingComputer.\\n"
+        "До кожної новини додається посилання на публікацію. "
+        "Подібні заголовки об'єднуються, але це не гарантує перевірку фактів.\\n\\n"
+        "Telegram-канали поки не підключені.",
+        chat_id, reply_markup=menu_keyboard(),
+    )
+
+
+def show_help(chat_id):
+    return send(
+        "ℹ️ Daily All News\\n\\n"
+        "/start або /menu — відкрити меню\\n"
+        "/now — свіжий дайджест одним повідомленням\\n"
+        "/topics — теми\\n"
+        "/sources — джерела\\n"
+        "/chatid — показати Chat ID\\n\\n"
+        "Розклад: 08:00 і 20:00 за Києвом.",
+        chat_id, reply_markup=menu_keyboard(),
+    )
 
 def chat_ids():
     if not TOKEN:
@@ -272,7 +326,11 @@ def setup_bot_profile():
         ("setMyDescription", {"description": BOT_DESCRIPTION, "language_code": "uk"}),
         ("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION, "language_code": "uk"}),
         ("setMyCommands", {"commands": [
+            {"command": "start", "description": "Відкрити меню бота"},
+            {"command": "menu", "description": "Головне меню"},
             {"command": "now", "description": "Отримати свіжі новини одним повідомленням"},
+            {"command": "topics", "description": "Теми новин"},
+            {"command": "sources", "description": "Список джерел"},
             {"command": "help", "description": "Довідка та розклад"},
             {"command": "chatid", "description": "Показати Chat ID"},
         ]}),
@@ -366,31 +424,63 @@ def digest(slot: str | None = None):
     finally:
         db.close()
 
+def handle_action(action: str, chat_id: int, update_id: int | str):
+    """Only the configured chat can request the news stream."""
+    if action in ("start", "menu"):
+        return show_menu(chat_id)
+    if action == "chatid":
+        return send(f"Ваш Chat ID: {chat_id}", chat_id, reply_markup=menu_keyboard())
+    if str(chat_id) != CHAT_ID:
+        return send("Цей дайджест доступний лише власнику бота.", chat_id)
+    if action == "news":
+        collect()
+        return digest("manual-" + str(update_id))
+    if action == "topics":
+        return show_topics(chat_id)
+    if action == "sources":
+        return show_sources(chat_id)
+    if action == "help":
+        return show_help(chat_id)
+    return show_menu(chat_id)
+
+
 def commands():
-    # /chatid works for anyone, but never auto-binds an unauthorized user's chat.
     db = connect()
     try:
-        offset_row = db.execute("SELECT val FROM state WHERE key='telegram_offset'").fetchone()
-        offset = int(offset_row["val"]) if offset_row else 0
-        result = telegram("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": ["message"]})
+        saved = db.execute("SELECT val FROM state WHERE key='telegram_offset'").fetchone()
+        offset = int(saved["val"]) if saved else 0
+        result = telegram(
+            "getUpdates",
+            {"offset": offset, "timeout": 0, "allowed_updates": ["message", "callback_query"]},
+        )
         for update in result:
-            message = update.get("message") or {}
-            chat = message.get("chat") or {}
-            chat_id, cmd = chat.get("id"), (message.get("text") or "").split(" ", 1)[0].split("@")[0]
-            if chat_id and cmd in ("/start", "/chatid"):
-                send(f"Ваш Telegram Chat ID: {chat_id}\n"
-                     "Додайте цей ID до TELEGRAM_CHAT_ID у захищених змінних Railway.",
-                     chat_id)
-            elif chat_id and str(chat_id) == CHAT_ID and cmd == "/now":
-                collect()
-                digest("manual-" + str(update["update_id"]))
-            elif chat_id and str(chat_id) == CHAT_ID and cmd == "/help":
-                send("/now — отримати свіжий дайджест\n"
-                     "/chatid — дізнатися Chat ID\n"
-                     "Розклад: 08:00 та 20:00 за Києвом.", chat_id)
+            callback = update.get("callback_query")
+            if callback:
+                callback_id = callback.get("id")
+                chat_id = ((callback.get("message") or {}).get("chat") or {}).get("id")
+                if callback_id:
+                    try:
+                        telegram("answerCallbackQuery", {"callback_query_id": callback_id})
+                    except Exception as exc:
+                        LOG.warning("Cannot acknowledge callback: %s", type(exc).__name__)
+                if chat_id:
+                    handle_action(str(callback.get("data") or ""), chat_id, update["update_id"])
+            else:
+                message = update.get("message") or {}
+                chat = message.get("chat") or {}
+                chat_id = chat.get("id")
+                cmd = (message.get("text") or "").split(" ", 1)[0].split("@")[0].lstrip("/")
+                actions = {"now": "news", "start": "start", "menu": "menu",
+                           "topics": "topics", "sources": "sources",
+                           "help": "help", "chatid": "chatid"}
+                if chat_id and cmd in actions:
+                    handle_action(actions[cmd], chat_id, update["update_id"])
             offset = update["update_id"] + 1
-            db.execute("INSERT INTO state(key,val) VALUES('telegram_offset',?) "
-                       "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (str(offset),))
+            db.execute(
+                "INSERT INTO state(key,val) VALUES('telegram_offset',?) "
+                "ON CONFLICT(key) DO UPDATE SET val=excluded.val",
+                (str(offset),),
+            )
             db.commit()
     finally:
         db.close()
