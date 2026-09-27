@@ -1,40 +1,74 @@
-# MONOLIT News — Telegram news digest
+# MONOLIT NEWS AI v0.2
 
-A personal Ukrainian-language news digest for these topics: drones and robotics, AI, Ukraine and world news, military technology, cybersecurity, technology and electronics, war, and politics.
+Personal Ukrainian-language Telegram news digest, collecting news about:
+- БпЛА та робототехніка
+- Штучний інтелект
+- Україна та світ
+- Військові технології
+- Кібербезпека
+- Технології та електроніка
+- Війна
+- Політика
 
-**Current status:** RSS/Google News collection, basic duplicate-title filtering, SQLite history, Telegram delivery and scheduling are implemented. This version **does not yet read Telegram channels**, verify claims automatically, or use AI embeddings. Google News/RSS do not represent every news source worldwide.
+## Implemented
 
-## Install and test
+- Google News RSS (Ukrainian locale) and independent BBC, TechCrunch and BleepingComputer RSS.
+- Feed refresh every 30 minutes; event clustering using multilingual title normalization, token/character similarity and removal of tracking URL parameters.
+- Balanced selection across configured subjects rather than allowing a single topic to dominate.
+- Persistent SQLite source history and restart-safe per-event delivery tracking.
+- Telegram delivery at **08:00 and 20:00 Europe/Kyiv** including daylight saving time.
+- Bot commands: `/chatid` or `/start` to get your chat ID, `/now` to request a digest, `/help`.
+- `python -m unittest discover -s tests -v` for offline tests; GitHub Actions CI.
 
-Requires Python 3.11+. Run:
+This is not a claim of exhaustive world-news coverage. Similar headlines may still refer to different events or translated duplicates may not match. No AI fact-checking, Telegram channel reading, image analysis, or content licensing beyond source links is implemented yet.
+
+## Connect Telegram securely
+
+1. Create a Telegram bot through [@BotFather](https://t.me/BotFather) (already done if continuing previous setup).
+2. In Railway project `personal-news-digest`, add the **secret** variable `TELEGRAM_BOT_TOKEN`. Do not put it in GitHub files, issues or chat.
+3. Send `/start` to your Telegram bot. Locally run `python main.py chat-id` after setting your bot token, or deploy the worker (with token only) and send `/chatid` to get your chat ID in Telegram.
+4. Add your numeric `TELEGRAM_CHAT_ID` as another Railway variable. Once both variables exist, Railway will run the scheduled worker and deliver digests only to that chat.
+5. With both configured, run `python main.py test-send` or send `/now` to your bot.
+
+## Railway deployment
+
+You need one available service slot in your Railway workspace. The previous eBay project's removal was staged but requires **your two-factor verification** in Railway. Do not remove its PostgreSQL service or data volume before exporting a database backup.
+
+Deploy from `sergioovcharenko/personal-news-digest` (branch `main`). The repository includes `railway.json` with `python main.py run` as the start command.
+
+Set environment variables:
+
+| Name | Value |
+|---|---|
+| `TELEGRAM_BOT_TOKEN` | Secret supplied by BotFather |
+| `TELEGRAM_CHAT_ID` | Telegram numeric Chat ID |
+| `TIMEZONE` | `Europe/Kyiv` |
+| `MORNING_HOUR` | `8` |
+| `EVENING_HOUR` | `20` |
+| `MAX_ITEMS_PER_DIGEST` | `16` |
+| `DB_PATH` | `/data/news.db` |
+
+Attach a persistent Railway volume mounted at `/data` to retain article history and deduplication after restart. Do not run multiple worker replicas, and do not enable auto-sleep if you want reliable scheduled delivery.
+
+## Local usage
+
+Requires Python 3.11+.
 
 ```bash
 python -m pip install -r requirements.txt
 cp .env.example .env
-```
-
-Create your Telegram bot with [@BotFather](https://t.me/BotFather) and save its token in your *local* `.env`. Never commit the actual `.env` to GitHub, publish the token, or paste it into chat.
-
-Send `/start` to your bot in Telegram. Then run `python main.py chat-id` to see your chat ID, which goes in `TELEGRAM_CHAT_ID` in `.env`.
-
-```bash
+# Edit the private .env locally with your BotFather token and chat ID.
+python main.py collect
+python main.py chat-id
 python main.py test-send
 python main.py once
 python main.py run
 ```
 
-The default schedule is 08:00 and 20:00 in the `Europe/Kyiv` timezone. RSS collection occurs every 30 minutes. Adjust the schedule with `MORNING_HOUR` and `EVENING_HOUR`.
+The `.env` file is in `.gitignore` and must never be committed. Use Railway Variables for hosted deployments.
 
-## Railway
+## Future upgrades
 
-1. Make this repository **private** using GitHub Settings > General > Danger Zone > Change repository visibility.
-2. In Railway, create a new project from this GitHub repository and add a worker service. Railway free-tier resource limits may prevent creating a project until resources are freed or the plan is upgraded. Do not remove existing projects unless you intend to.
-3. In Railway Variables, add `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`; optionally set `TIMEZONE=Europe/Kyiv`, `MORNING_HOUR=8`, `EVENING_HOUR=20`, and `MAX_ITEMS_PER_DIGEST=12`.
-4. Start command: `python main.py run`. Attach a persistent volume mounted at `/data`; set `DB_PATH=/data/news.db`.
-5. Use one running worker instance. Do not turn on sleep/scale-to-zero for continuous collection.
-
-## Notes
-
-Near-duplicate filtering compares normalized Ukrainian/English headlines. Significantly paraphrased or translated duplicates may pass. Links are included so you can inspect original reporting. Political coverage is descriptive and should include multiple sources rather than inferring any editorial endorsement. A follow-up version can add authorized Telegram channel reading and better multilingual event clustering.
-
-**Secrets:** a Telegram bot token grants control over the bot. Never place it in a public repository or commit history. For Telegram-channel access, a separate authorized account/API configuration is required; the bot token alone cannot read arbitrary channels.
+- Authorized channel ingestion via Telegram API (public or permitted private channels; not available using only a BotFather token).
+- Optional semantic embeddings for multilingual deduplication and AI summaries, gated by human-readable source references.
+- Topic controls and source allow/block lists in the Telegram bot and a private web interface.
