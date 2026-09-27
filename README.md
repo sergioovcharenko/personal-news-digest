@@ -1,4 +1,4 @@
-# MONOLIT NEWS AI v0.2
+# Daily All News v0.2
 
 Personal Ukrainian-language Telegram news digest, collecting news about:
 - БпЛА та робототехніка
