@@ -222,17 +222,17 @@ def send(text: str, chat_id: str | int = CHAT_ID,
 
 def show_menu(chat_id):
     return send(
-        "📰 Daily All News\\n\\n"
+        "📰 Daily All News\n\n"
         "Особистий огляд новин України та світу. "
         "Один дайджест о 08:00 і 20:00 за Києвом. "
-        "Заголовки іноземних видань перекладаються українською.\\n\\n"
+        "Заголовки іноземних видань перекладаються українською.\n\n"
         "Оберіть дію:",
         chat_id, reply_markup=menu_keyboard(),
     )
 
 
 def show_topics(chat_id):
-    text = "📚 Теми твого дайджесту:\\n\\n" + "\\n".join(
+    text = "📚 Теми твого дайджесту:\n\n" + "\n".join(
         f"{TOPIC_ICONS.get(name, '•')} {name}" for name in TOPICS
     )
     return send(text, chat_id, reply_markup=menu_keyboard())
@@ -240,9 +240,9 @@ def show_topics(chat_id):
 
 def show_sources(chat_id):
     return send(
-        "🔗 Джерела: Google News RSS, BBC, TechCrunch і BleepingComputer.\\n"
+        "🔗 Джерела: Google News RSS, BBC, TechCrunch і BleepingComputer.\n"
         "До кожної новини додається посилання на публікацію. "
-        "Подібні заголовки об'єднуються, але це не гарантує перевірку фактів.\\n\\n"
+        "Подібні заголовки об'єднуються, але це не гарантує перевірку фактів.\n\n"
         "Telegram-канали поки не підключені.",
         chat_id, reply_markup=menu_keyboard(),
     )
@@ -250,12 +250,12 @@ def show_sources(chat_id):
 
 def show_help(chat_id):
     return send(
-        "ℹ️ Daily All News\\n\\n"
-        "/start або /menu — відкрити меню\\n"
-        "/now — свіжий дайджест одним повідомленням\\n"
-        "/topics — теми\\n"
-        "/sources — джерела\\n"
-        "/chatid — показати Chat ID\\n\\n"
+        "ℹ️ Daily All News\n\n"
+        "/start або /menu — відкрити меню\n"
+        "/now — свіжий дайджест одним повідомленням\n"
+        "/topics — теми\n"
+        "/sources — джерела\n"
+        "/chatid — показати Chat ID\n\n"
         "Розклад: 08:00 і 20:00 за Києвом.",
         chat_id, reply_markup=menu_keyboard(),
     )
