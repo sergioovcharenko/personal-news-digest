@@ -1,4 +1,4 @@
-# Daily All News v0.2
+# Daily All News v0.3
 
 Personal Ukrainian-language Telegram news digest, collecting news about:
 - БпЛА та робототехніка
@@ -15,8 +15,11 @@ Personal Ukrainian-language Telegram news digest, collecting news about:
 - Google News RSS (Ukrainian locale) and independent BBC, TechCrunch and BleepingComputer RSS.
 - Feed refresh every 30 minutes; event clustering using multilingual title normalization, token/character similarity and removal of tracking URL parameters.
 - Balanced selection across configured subjects rather than allowing a single topic to dominate.
+- Single HTML-formatted Telegram digest grouped by subject with link labels rather than long raw URLs.
+- Ukrainian automatic translation of foreign-language headlines and short RSS descriptions (best effort; falls back to clearly marked original when the translator is unavailable). Successful translations are cached in SQLite.
+- Automatic Telegram profile description, short bio and bot-command menu on startup.
 - Persistent SQLite source history and restart-safe per-event delivery tracking.
-- Telegram delivery at **08:00 and 20:00 Europe/Kyiv** including daylight saving time.
+- Telegram delivery in **one message** at **08:00 and 20:00 Europe/Kyiv**, including daylight saving time.
 - Bot commands: `/chatid` or `/start` to get your chat ID, `/now` to request a digest, `/help`.
 - `python -m unittest discover -s tests -v` for offline tests; GitHub Actions CI.
 
@@ -72,3 +75,7 @@ The `.env` file is in `.gitignore` and must never be committed. Use Railway Vari
 - Authorized channel ingestion via Telegram API (public or permitted private channels; not available using only a BotFather token).
 - Optional semantic embeddings for multilingual deduplication and AI summaries, gated by human-readable source references.
 - Topic controls and source allow/block lists in the Telegram bot and a private web interface.
+
+## Telegram profile
+
+On startup, the bot sets its Ukrainian description and command list via the Telegram Bot API. The profile photo requires uploading a square JPG through BotFather or an authorized `setMyProfilePhoto` call; no secret token or image is stored in this repository.
