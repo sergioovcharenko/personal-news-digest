@@ -2,6 +2,8 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
+import datetime as dt
 
 # No bot token or live network is required for unit tests.
 os.environ["TELEGRAM_BOT_TOKEN"] = ""
@@ -57,6 +59,34 @@ class NewsTests(unittest.TestCase):
         self.db.commit()
         chosen = main._candidates(self.db)
         self.assertTrue(any(x["topic"] == "Кібербезпека" for x in chosen))
+
+
+    def test_digest_uses_single_telegram_message(self):
+        main.add(self.db, "Robotics team reveals upgraded aircraft model",
+                 "https://example.com/drone", "БпЛА та робототехніка")
+        main.add(self.db, "Security researchers discover an important vulnerability",
+                 "https://example.com/security", "Кібербезпека")
+        self.db.commit()
+        with patch.object(main, "CHAT_ID", "test-chat"), patch.object(main, "send") as mock_send:
+            sent = main.digest("test-one-message")
+        self.assertEqual(sent, 2)
+        mock_send.assert_called_once()
+        self.assertIn("Кібербезпека", mock_send.call_args.args[0])
+        with patch.object(main, "CHAT_ID", "test-chat"), patch.object(main, "send") as mock_send:
+            self.assertEqual(main.digest("test-one-message"), 0)
+            mock_send.assert_not_called()
+
+    def test_oversized_digest_preserves_unsent_items(self):
+        items = [
+            {"id": i, "title": "A news event " + str(i) + " " + "x" * 130,
+             "topic": "Кібербезпека", "url": "https://example.com/" + str(i), "sources": 2}
+            for i in range(30)
+        ]
+        message, ids = main.compose_digest(items, dt.datetime(2026, 9, 27, 20), limit=900)
+        self.assertLessEqual(len(message), 900)
+        self.assertGreater(len(ids), 0)
+        self.assertLess(len(ids), len(items))
+        self.assertIn("залишено для наступного огляду", message)
 
 if __name__ == "__main__":
     unittest.main()
