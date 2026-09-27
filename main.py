@@ -86,6 +86,10 @@ def connect() -> sqlite3.Connection:
                "id INTEGER PRIMARY KEY, title TEXT NOT NULL, norm TEXT NOT NULL, "
                "topic TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, "
                "last_sent TEXT DEFAULT NULL)")
+    # Add descriptions to databases created by earlier bot versions.
+    cols = {r[1] for r in db.execute("PRAGMA table_info(events)").fetchall()}
+    if "summary" not in cols:
+        db.execute("ALTER TABLE events ADD COLUMN summary TEXT NOT NULL DEFAULT ''")
     db.execute("CREATE TABLE IF NOT EXISTS articles("
                "url TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES events(id),"
                "publisher TEXT, seen TEXT NOT NULL)")
@@ -126,25 +130,29 @@ def clean_url(url: str) -> str:
     except ValueError:
         return ""
 
-def add(db: sqlite3.Connection, title: str, url: str, topic: str, publisher: str = "", now=None) -> bool:
+def add(db: sqlite3.Connection, title: str, url: str, topic: str, publisher: str = "", now=None, summary: str = "") -> bool:
     url, norm = clean_url(url), normalize(title)
     if not norm or not url or len(norm) < 15:
         return False
     if db.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone():
         return False
     now = now or NOW().isoformat()
+    summary = " ".join(re.sub(r"<[^>]*>", " ", html.unescape(summary)).split())[:240]
+    if similarity(normalize(title), normalize(summary)) > .85:
+        summary = ""
     # Compare only recent events, to avoid grouping unrelated recurring stories months apart.
     since = (dt.datetime.fromisoformat(now) - dt.timedelta(hours=54)).isoformat()
     rows = db.execute("SELECT id,norm FROM events WHERE last_seen>=? ORDER BY id DESC LIMIT 1400", (since,)).fetchall()
     match = next((r["id"] for r in rows if similarity(norm, r["norm"]) >= .86), None)
     if match is None:
         cursor = db.execute(
-            "INSERT INTO events(title,norm,topic,first_seen,last_seen) VALUES(?,?,?,?,?)",
-            (title, norm, topic, now, now),
+            "INSERT INTO events(title,norm,topic,first_seen,last_seen,summary) VALUES(?,?,?,?,?,?)",
+            (title, norm, topic, now, now, summary),
         )
         match = cursor.lastrowid
     else:
-        db.execute("UPDATE events SET last_seen=? WHERE id=?", (now, match))
+        db.execute("UPDATE events SET last_seen=?, summary=CASE WHEN summary='' THEN ? ELSE summary END "
+                   "WHERE id=?", (now, summary, match))
     db.execute("INSERT OR IGNORE INTO articles(url,event_id,publisher,seen) VALUES(?,?,?,?)",
                (url, match, publisher, now))
     return True
@@ -166,7 +174,11 @@ def collect() -> dict:
                     # Google RSS often appends the publisher after a dash.
                     if not publisher and " - " in title:
                         publisher = title.rsplit(" - ", 1)[-1]
-                    if add(db, title, link, topic, publisher):
+                    description = entry.get("summary", "")
+                    # Aggregator summaries often contain a list of linked article titles.
+                    if description.count("<a ") > 1:
+                        description = ""
+                    if add(db, title, link, topic, publisher, summary=description):
                         counts[topic] += 1
                 db.commit()
             except Exception as exc:
@@ -207,7 +219,7 @@ def chat_ids():
 def _candidates(db: sqlite3.Connection):
     # Distribute places across topics rather than allowing one trending topic to dominate.
     rows = db.execute(
-        "SELECT e.id,e.title,e.topic,e.first_seen,"
+        "SELECT e.id,e.title,e.topic,e.first_seen,e.summary,"
         "(SELECT url FROM articles a WHERE a.event_id=e.id ORDER BY a.seen ASC LIMIT 1) url,"
         "(SELECT COUNT(*) FROM articles a WHERE a.event_id=e.id) sources "
         "FROM events e WHERE e.last_sent IS NULL ORDER BY e.first_seen DESC LIMIT 350"
@@ -278,6 +290,9 @@ def compose_digest(items, local, limit=3900, title_transform=None):
         return header + "\n\nНових повідомлень поки немає.", []
     blocks, included = [header], []
     last_topic = None
+    # Group by subject while preserving freshness within each subject.
+    items = sorted(items, key=lambda item: list(TOPICS).index(item["topic"])
+                   if item["topic"] in TOPICS else len(TOPICS))
     for item in items:
         original = str(item["title"]).strip()
         title, translated = title_transform(original)
@@ -292,6 +307,16 @@ def compose_digest(items, local, limit=3900, title_transform=None):
             separator = "\n\n" + TOPIC_ICONS.get(topic, "🗞️") + " <b>" + html.escape(topic) + "</b>"
         # Note original language when a translation service is unavailable.
         note = "" if translated else "\n<i>Оригінал: автоматичний переклад недоступний</i>"
+        description = str(item["summary"] or "").strip() if "summary" in item.keys() else ""
+        if description:
+            brief, brief_translated = title_transform(description)
+            brief = brief.strip()
+            if len(brief) > 125:
+                brief = brief[:122].rsplit(" ", 1)[0] + "…"
+            if brief and normalize(brief) != normalize(original):
+                note += "\\n<i>Коротко: " + html.escape(brief) + "</i>"
+                if not brief_translated:
+                    note += " <i>(оригінал)</i>"
         sources = int(item["sources"])
         source_label = "публікація" if sources == 1 else "публікації" if sources in (2, 3, 4) else "публікацій"
         link = '<a href="' + html.escape(url, quote=True) + '">Читати джерело ↗</a>'
