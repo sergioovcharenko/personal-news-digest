@@ -208,6 +208,15 @@ def menu_keyboard():
     ]}
 
 
+def persistent_keyboard():
+    """The Telegram keyboard appears above the text input and stays visible."""
+    return {"keyboard": [
+        [{"text": "📰 Новини зараз"}, {"text": "📚 Теми"}],
+        [{"text": "🔗 Джерела"}, {"text": "ℹ️ Довідка"}],
+        [{"text": "🏠 Меню"}],
+    ], "resize_keyboard": True, "is_persistent": True}
+
+
 def send(text: str, chat_id: str | int = CHAT_ID,
          parse_mode: str | None = None, reply_markup: dict | None = None):
     if not chat_id:
@@ -227,7 +236,7 @@ def show_menu(chat_id):
         "Один дайджест о 08:00 і 20:00 за Києвом. "
         "Заголовки іноземних видань перекладаються українською.\n\n"
         "Оберіть дію:",
-        chat_id, reply_markup=menu_keyboard(),
+        chat_id, reply_markup=persistent_keyboard(),
     )
 
 
@@ -332,6 +341,16 @@ def setup_bot_profile():
             {"command": "topics", "description": "Теми новин"},
             {"command": "sources", "description": "Список джерел"},
             {"command": "help", "description": "Довідка та розклад"},
+            {"command": "chatid", "description": "Показати Chat ID"},
+        ]}),
+        ("setChatMenuButton", {"menu_button": {"type": "commands"}}),
+        ("setMyCommands", {"commands": [
+            {"command": "start", "description": "Відкрити головне меню"},
+            {"command": "menu", "description": "Показати кнопки"},
+            {"command": "now", "description": "Отримати новини зараз"},
+            {"command": "topics", "description": "Список тем"},
+            {"command": "sources", "description": "Джерела новин"},
+            {"command": "help", "description": "Довідка"},
             {"command": "chatid", "description": "Показати Chat ID"},
         ]}),
     ):
@@ -464,6 +483,7 @@ def commands():
                     except Exception as exc:
                         LOG.warning("Cannot acknowledge callback: %s", type(exc).__name__)
                 if chat_id:
+                    LOG.info("Telegram callback received: %s", str(callback.get("data") or ""))
                     handle_action(str(callback.get("data") or ""), chat_id, update["update_id"])
             else:
                 message = update.get("message") or {}
@@ -473,8 +493,18 @@ def commands():
                 actions = {"now": "news", "start": "start", "menu": "menu",
                            "topics": "topics", "sources": "sources",
                            "help": "help", "chatid": "chatid"}
-                if chat_id and cmd in actions:
-                    handle_action(actions[cmd], chat_id, update["update_id"])
+                labels = {
+                    "📰 Новини зараз": "news",
+                    "📚 Теми": "topics",
+                    "🔗 Джерела": "sources",
+                    "ℹ️ Довідка": "help",
+                    "🏠 Меню": "menu",
+                }
+                if chat_id:
+                    action = labels.get((message.get("text") or "").strip()) or actions.get(cmd)
+                    if action:
+                        LOG.info("Telegram command received: %s", action)
+                        handle_action(action, chat_id, update["update_id"])
             offset = update["update_id"] + 1
             db.execute(
                 "INSERT INTO state(key,val) VALUES('telegram_offset',?) "
@@ -485,10 +515,30 @@ def commands():
     finally:
         db.close()
 
+def announce_menu_once():
+    """Send actual persistent menu after deployment; only once per menu version."""
+    if not CHAT_ID:
+        return
+    db = connect()
+    try:
+        key = "menu_announcement_v2"
+        if db.execute("SELECT 1 FROM state WHERE key=?", (key,)).fetchone():
+            return
+        show_menu(CHAT_ID)
+        db.execute("INSERT INTO state(key,val) VALUES(?,?)", (key, NOW().isoformat()))
+        db.commit()
+        LOG.info("Persistent menu delivered to configured Telegram chat")
+    except Exception as exc:
+        LOG.warning("Cannot deliver persistent menu: %s: %s", type(exc).__name__, exc)
+    finally:
+        db.close()
+
+
 def run():
     if not TOKEN:
         raise RuntimeError("Configure TELEGRAM_BOT_TOKEN in Railway")
     setup_bot_profile()
+    announce_menu_once()
     collect()
     scheduler = BlockingScheduler(timezone=TZ)
     scheduler.add_job(collect, "interval", minutes=30, id="collect", coalesce=True, max_instances=1)
