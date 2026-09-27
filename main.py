@@ -198,6 +198,40 @@ def _candidates(db: sqlite3.Connection):
                 chosen.append(groups[topic].pop(0))
     return chosen
 
+def compose_digest(items, local, limit=3900):
+    """Fit a complete digest into a single Telegram message (max 4096 chars).
+
+    Returns the message and only the event IDs actually included; any overflow
+    remains unsent in SQLite for the next digest.
+    """
+    header = ("MONOLIT NEWS AI | " + local.strftime("%d.%m.%Y %H:%M") +
+              " (Київ)\nНезалежне підтвердження повідомлень не гарантується.")
+    if not items:
+        return header + "\n\nНових повідомлень поки немає.", []
+    lines, included = [header], []
+    for item in items:
+        title = str(item["title"]).strip()
+        if len(title) > 145:
+            title = title[:142].rstrip() + "..."
+        url = str(item["url"] or "")
+        # Extremely long URLs can otherwise take most of Telegram's message.
+        if len(url) > 350:
+            continue
+        block = (f"\n{len(included) + 1}. [{item['topic']}] {title}\n"
+                 f"Джерел: {item['sources']} · {url}")
+        if len("\n".join(lines)) + len(block) + 65 > limit:
+            break
+        lines.append(block)
+        included.append(item["id"])
+    remaining = len(items) - len(included)
+    if remaining:
+        lines.append(f"\nЩе {remaining} подій залишено для наступного огляду.")
+    if not included:
+        # Do not claim the digest delivered any events if nothing fits.
+        lines.append("\nНовин у форматі короткого повідомлення поки немає.")
+    return "\n".join(lines), included
+
+
 def digest(slot: str | None = None):
     if not CHAT_ID:
         raise RuntimeError("Configure TELEGRAM_CHAT_ID in Railway first")
@@ -209,23 +243,17 @@ def digest(slot: str | None = None):
             LOG.info("Digest %s already delivered", slot)
             return 0
         items = _candidates(db)
-        header = "MONOLIT NEWS AI | " + local.strftime("%d.%m.%Y %H:%M") + " (Київ)"
-        if not items:
-            send(header + "\n\nНових повідомлень поки немає.")
-        else:
-            send(header + f"\n{len(items)} різних подій. Дані джерел не є незалежним підтвердженням.")
-            for index, item in enumerate(items, 1):
-                message = (f"{index}. [{item['topic']}] {item['title']}\n"
-                           f"Джерел у стрічці: {item['sources']}\n{item['url']}")
-                send(message[:3900])
-                # Mark each event after Telegram confirms successful delivery.
-                db.execute("UPDATE events SET last_sent=? WHERE id=?", (NOW().isoformat(), item["id"]))
-                db.commit()
-                time.sleep(.08)
-        db.execute("INSERT INTO deliveries(slot,sent_at) VALUES(?,?)", (slot, NOW().isoformat()))
+        text, ids = compose_digest(items, local)
+        # Exactly one sendMessage call per digest, including manual /now.
+        send(text)
+        when = NOW().isoformat()
+        if ids:
+            db.executemany("UPDATE events SET last_sent=? WHERE id=?",
+                           [(when, event_id) for event_id in ids])
+        db.execute("INSERT INTO deliveries(slot,sent_at) VALUES(?,?)", (slot, when))
         db.commit()
-        LOG.info("Digest %s delivered (%d events)", slot, len(items))
-        return len(items)
+        LOG.info("Single-message digest %s delivered (%d events)", slot, len(ids))
+        return len(ids)
     finally:
         db.close()
 
