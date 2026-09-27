@@ -67,11 +67,12 @@ class NewsTests(unittest.TestCase):
         main.add(self.db, "Security researchers discover an important vulnerability",
                  "https://example.com/security", "Кібербезпека")
         self.db.commit()
-        with patch.object(main, "CHAT_ID", "test-chat"), patch.object(main, "send") as mock_send:
+        with patch.object(main, "CHAT_ID", "test-chat"), patch.object(main, "translate_title", side_effect=lambda db, title: (title, True)), patch.object(main, "send") as mock_send:
             sent = main.digest("test-one-message")
         self.assertEqual(sent, 2)
         mock_send.assert_called_once()
         self.assertIn("Кібербезпека", mock_send.call_args.args[0])
+        self.assertEqual(mock_send.call_args.kwargs["parse_mode"], "HTML")
         with patch.object(main, "CHAT_ID", "test-chat"), patch.object(main, "send") as mock_send:
             self.assertEqual(main.digest("test-one-message"), 0)
             mock_send.assert_not_called()
@@ -86,7 +87,40 @@ class NewsTests(unittest.TestCase):
         self.assertLessEqual(len(message), 900)
         self.assertGreater(len(ids), 0)
         self.assertLess(len(ids), len(items))
-        self.assertIn("залишено для наступного огляду", message)
+        self.assertIn("залишено на наступний огляд", message)
+
+
+    def test_digest_groups_topics_and_escapes_html(self):
+        items = [
+            {"id": 1, "title": "AI & machine <learning> advances",
+             "topic": "Штучний інтелект", "url": "https://a.example/?x=1&y=2", "sources": 1},
+            {"id": 2, "title": "Another AI article about models",
+             "topic": "Штучний інтелект", "url": "https://b.example/a", "sources": 2},
+        ]
+        msg, ids = main.compose_digest(items, dt.datetime(2026,9,27,20))
+        self.assertEqual(ids, [1, 2])
+        self.assertEqual(msg.count("<b>Штучний інтелект</b>"), 1)
+        self.assertIn("AI &amp; machine &lt;learning&gt;", msg)
+        self.assertIn("x=1&amp;y=2", msg)
+        self.assertIn("Читати джерело", msg)
+
+    def test_translation_uses_cache(self):
+        self.db.execute(
+            "INSERT INTO translated_titles(source,ukrainian,translated_at) VALUES(?,?,?)",
+            ("Artificial intelligence development", "Розвиток штучного інтелекту", "2026-09-27"))
+        self.db.commit()
+        with patch.object(main, "GoogleTranslator") as translator:
+            title, ok = main.translate_title(self.db, "Artificial intelligence development")
+        self.assertTrue(ok)
+        self.assertEqual(title, "Розвиток штучного інтелекту")
+        translator.assert_not_called()
+
+    def test_foreign_title_translation(self):
+        with patch.object(main, "detect", return_value="en"), patch.object(main, "GoogleTranslator") as client:
+            client.return_value.translate.return_value = "Новий прорив у робототехніці"
+            title, ok = main.translate_title(self.db, "New breakthrough in robotics")
+        self.assertTrue(ok)
+        self.assertEqual(title, "Новий прорив у робототехніці")
 
 if __name__ == "__main__":
     unittest.main()
