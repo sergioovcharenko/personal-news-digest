@@ -1,4 +1,4 @@
-"""MONOLIT NEWS AI: RSS collection, multilingual headline deduplication, Telegram digests.
+"""Daily All News: RSS collection, multilingual headline deduplication, Telegram digests.
 Requires Python >=3.11. Secrets must be provided only through environment variables.
 """
 from __future__ import annotations
@@ -24,14 +24,14 @@ from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
 
 load_dotenv()
-LOG = logging.getLogger("monolit.news")
+LOG = logging.getLogger("dailyallnews")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Kyiv"))
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 DB_PATH = Path(os.getenv("DB_PATH", "news.db"))
 MAX_ITEMS = max(1, min(30, int(os.getenv("MAX_ITEMS_PER_DIGEST", "16"))))
-HEADERS = {"User-Agent": "MONOLITNews/0.2 (personal news aggregator)"}
+HEADERS = {"User-Agent": "DailyAllNews/0.2 (personal news aggregator)"}
 NOW = lambda: dt.datetime.now(dt.timezone.utc)
 TOPICS = {
     "БпЛА та робототехніка": ["drone UAV robotics", "безпілотники робототехніка"],
@@ -204,7 +204,7 @@ def compose_digest(items, local, limit=3900):
     Returns the message and only the event IDs actually included; any overflow
     remains unsent in SQLite for the next digest.
     """
-    header = ("MONOLIT NEWS AI | " + local.strftime("%d.%m.%Y %H:%M") +
+    header = ("Daily All News | " + local.strftime("%d.%m.%Y %H:%M") +
               " (Київ)\nНезалежне підтвердження повідомлень не гарантується.")
     if not items:
         return header + "\n\nНових повідомлень поки немає.", []
@@ -295,7 +295,7 @@ def run():
                       minute=0, id="morning", misfire_grace_time=3600)
     scheduler.add_job(lambda: (collect(), digest()), "cron", hour=int(os.getenv("EVENING_HOUR", "20")),
                       minute=0, id="evening", misfire_grace_time=3600)
-    LOG.info("MONOLIT NEWS AI started: %s", TZ)
+    LOG.info("Daily All News started: %s", TZ)
     scheduler.start()
 
 if __name__ == "__main__":
@@ -311,6 +311,6 @@ if __name__ == "__main__":
         collect()
         print("Sent:", digest("manual-" + str(int(time.time()))))
     elif choice == "test-send":
-        send("MONOLIT NEWS AI: тестове повідомлення.")
+        send("Daily All News: тестове повідомлення.")
     else:
         raise SystemExit("Commands: run, collect, chat-id, once, test-send")
