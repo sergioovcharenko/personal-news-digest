@@ -1,209 +1,288 @@
-"""Personal RSS news digest delivered by Telegram at 08:00 and 20:00 Kyiv time."""
+"""MONOLIT NEWS AI: RSS collection, multilingual headline deduplication, Telegram digests.
+Requires Python >=3.11. Secrets must be provided only through environment variables.
+"""
+from __future__ import annotations
+
 import datetime as dt
 import difflib
 import html
+import json
 import logging
 import os
 import re
 import sqlite3
-import sys
 import time
+import unicodedata
+from collections import defaultdict
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, parse_qsl, urlencode, urlsplit, urlunsplit
+from zoneinfo import ZoneInfo
 
 import feedparser
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
-from zoneinfo import ZoneInfo
 
 load_dotenv()
+LOG = logging.getLogger("monolit.news")
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-LOG = logging.getLogger("news")
 TZ = ZoneInfo(os.getenv("TIMEZONE", "Europe/Kyiv"))
-DB_PATH = Path(os.getenv("DB_PATH", "./news.db"))
 TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
-MAX_ITEMS = int(os.getenv("MAX_ITEMS_PER_DIGEST", "12"))
-HEADERS = {"User-Agent": "PersonalNewsDigest/0.1 (+RSS; contact via repository)"}
-QUERIES = {
-    "БпЛА та робототехніка": 'drone robotics UAV',
-    "Штучний інтелект": 'artificial intelligence AI',
-    "Україна та світ": 'Ukraine world news',
-    "Військові технології": 'defense technology military technology',
-    "Кібербезпека": 'cybersecurity cyber attack',
-    "Технології та електроніка": 'technology electronics semiconductors',
-    "Війна": 'Ukraine war',
-    "Політика": 'Ukraine international politics',
+CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+DB_PATH = Path(os.getenv("DB_PATH", "news.db"))
+MAX_ITEMS = max(1, min(30, int(os.getenv("MAX_ITEMS_PER_DIGEST", "16"))))
+HEADERS = {"User-Agent": "MONOLITNews/0.2 (personal news aggregator)"}
+NOW = lambda: dt.datetime.now(dt.timezone.utc)
+TOPICS = {
+    "БпЛА та робототехніка": ["drone UAV robotics", "безпілотники робототехніка"],
+    "Штучний інтелект": ["artificial intelligence AI"],
+    "Україна та світ": ["Ukraine world international news"],
+    "Військові технології": ["defense military technology", "військові технології"],
+    "Кібербезпека": ["cybersecurity cyberattack"],
+    "Технології та електроніка": ["semiconductor electronics technology"],
+    "Війна": ["Ukraine war фронт"],
+    "Політика": ["Ukraine international politics diplomacy"],
 }
-# Google News RSS returns publisher links and localized summaries.
-FEEDS = {
-    topic: "https://news.google.com/rss/search?q="
-    + quote(query + " when:1d")
-    + "&hl=uk&gl=UA&ceid=UA:uk"
-    for topic, query in QUERIES.items()
-}
-FEEDS["Україна та світ (Суспільне)"] = "https://suspilne.media/rss/"
+FEEDS = [
+    (topic, f"https://news.google.com/rss/search?q={quote(query + ' when:2d')}&hl=uk&gl=UA&ceid=UA:uk")
+    for topic, queries in TOPICS.items() for query in queries
+]
+FEEDS += [
+    ("Україна та світ", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("Технології та електроніка", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
+    ("Штучний інтелект", "https://techcrunch.com/feed/"),
+    ("Кібербезпека", "https://www.bleepingcomputer.com/feed/"),
+]
+STOP = set(("the a an and or of in on for to is are with from after over about as by at be this that "
+            "та і й в у на до за з із про для від під щодо після через новини news live update updates "
+            "ukraine україна україни українські війна war").split())
+TRACKING = {"utm_source", "utm_medium", "utm_campaign", "utm_term", "utm_content", "fbclid", "gclid"}
 
-def connect():
+def connect() -> sqlite3.Connection:
     DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    conn.execute("""CREATE TABLE IF NOT EXISTS articles(
-        id INTEGER PRIMARY KEY, title TEXT NOT NULL, normalized TEXT NOT NULL,
-        topic TEXT NOT NULL, url TEXT NOT NULL UNIQUE, publisher TEXT,
-        discovered TEXT NOT NULL, sent INTEGER DEFAULT 0)""")
-    conn.execute("""CREATE TABLE IF NOT EXISTS deliveries(
-        slot TEXT PRIMARY KEY, completed TEXT NOT NULL)""")
-    conn.commit()
-    return conn
+    db = sqlite3.connect(DB_PATH, timeout=30)
+    db.row_factory = sqlite3.Row
+    db.execute("PRAGMA journal_mode=WAL")
+    db.execute("CREATE TABLE IF NOT EXISTS events("
+               "id INTEGER PRIMARY KEY, title TEXT NOT NULL, norm TEXT NOT NULL, "
+               "topic TEXT NOT NULL, first_seen TEXT NOT NULL, last_seen TEXT NOT NULL, "
+               "last_sent TEXT DEFAULT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS articles("
+               "url TEXT PRIMARY KEY, event_id INTEGER NOT NULL REFERENCES events(id),"
+               "publisher TEXT, seen TEXT NOT NULL)")
+    db.execute("CREATE INDEX IF NOT EXISTS idx_events_sent ON events(last_sent,first_seen)")
+    db.execute("CREATE TABLE IF NOT EXISTS deliveries("
+               "slot TEXT PRIMARY KEY, sent_at TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, val TEXT NOT NULL)")
+    db.commit()
+    return db
 
-def normalize(title):
-    title = re.sub(r"\s+[-–—|]\s+[^-–—|]{3,55}$", "", title)
-    title = re.sub(r"[^\w\s]", " ", title.casefold())
-    return " ".join(title.split())
+def normalize(text: str) -> str:
+    text = html.unescape(re.sub(r"<[^>]*>", " ", text))
+    text = re.sub(r"\s+[-–—|]\s+[^–—|]{3,60}$", "", text)
+    text = unicodedata.normalize("NFKC", text).casefold().replace("’", "'")
+    text = re.sub(r"[^\w\s]", " ", text, flags=re.UNICODE)
+    return " ".join(text.split())
 
-def near_duplicate(conn, norm):
-    if not norm:
-        return True
-    rows = conn.execute("SELECT normalized FROM articles ORDER BY id DESC LIMIT 900").fetchall()
-    return any(
-        norm == r["normalized"]
-        or (len(norm) > 24 and difflib.SequenceMatcher(None, norm, r["normalized"]).ratio() >= 0.87)
-        for r in rows
-    )
+def similarity(a: str, b: str) -> float:
+    if not a or not b:
+        return 0.
+    if a == b:
+        return 1.
+    sa, sb = set(a.split()) - STOP, set(b.split()) - STOP
+    jac = len(sa & sb) / len(sa | sb) if sa | sb else 0.
+    seq = difflib.SequenceMatcher(None, a, b).ratio()
+    return max(jac if len(sa & sb) >= 3 else 0., seq)
 
-def collect():
-    conn = connect()
-    added = 0
+def clean_url(url: str) -> str:
     try:
-        for topic, url in FEEDS.items():
+        s = urlsplit(url.strip())
+        if s.scheme not in ("https", "http") or not s.netloc:
+            return ""
+        query = urlencode([(k, v) for k, v in parse_qsl(s.query, keep_blank_values=True)
+                           if k.lower() not in TRACKING and not k.lower().startswith("utm_")])
+        return urlunsplit((s.scheme.lower(), s.netloc.lower(), s.path.rstrip("/") or "/", query, ""))
+    except ValueError:
+        return ""
+
+def add(db: sqlite3.Connection, title: str, url: str, topic: str, publisher: str = "", now=None) -> bool:
+    url, norm = clean_url(url), normalize(title)
+    if not norm or not url or len(norm) < 15:
+        return False
+    if db.execute("SELECT 1 FROM articles WHERE url=?", (url,)).fetchone():
+        return False
+    now = now or NOW().isoformat()
+    # Compare only recent events, to avoid grouping unrelated recurring stories months apart.
+    since = (dt.datetime.fromisoformat(now) - dt.timedelta(hours=54)).isoformat()
+    rows = db.execute("SELECT id,norm FROM events WHERE last_seen>=? ORDER BY id DESC LIMIT 1400", (since,)).fetchall()
+    match = next((r["id"] for r in rows if similarity(norm, r["norm"]) >= .86), None)
+    if match is None:
+        cursor = db.execute(
+            "INSERT INTO events(title,norm,topic,first_seen,last_seen) VALUES(?,?,?,?,?)",
+            (title, norm, topic, now, now),
+        )
+        match = cursor.lastrowid
+    else:
+        db.execute("UPDATE events SET last_seen=? WHERE id=?", (now, match))
+    db.execute("INSERT OR IGNORE INTO articles(url,event_id,publisher,seen) VALUES(?,?,?,?)",
+               (url, match, publisher, now))
+    return True
+
+def collect() -> dict:
+    db = connect()
+    counts = defaultdict(int)
+    try:
+        for topic, url in FEEDS:
             try:
-                response = requests.get(url, headers=HEADERS, timeout=20)
+                response = requests.get(url, headers=HEADERS, timeout=18)
                 response.raise_for_status()
-                parsed = feedparser.parse(response.content)
-                for item in parsed.entries[:35]:
-                    title = html.unescape(re.sub("<[^>]+>", "", item.get("title", ""))).strip()
-                    link = item.get("link", "").strip()
-                    if not title or not link:
-                        continue
-                    # Source priority is not a claim of independent verification.
-                    norm = normalize(title)
-                    if near_duplicate(conn, norm):
-                        continue
-                    publisher = item.get("source", {}).get("title", "") if isinstance(item.get("source", {}), dict) else ""
-                    conn.execute(
-                        "INSERT OR IGNORE INTO articles(title,normalized,topic,url,publisher,discovered) VALUES(?,?,?,?,?,?)",
-                        (title, norm, topic, link, publisher, dt.datetime.now(dt.timezone.utc).isoformat())
-                    )
-                    added += 1
-                conn.commit()
-            except Exception:
-                LOG.exception("Feed failed: %s", topic)
+                feed = feedparser.parse(response.content)
+                for entry in feed.entries[:35]:
+                    title = html.unescape(re.sub(r"<[^>]+>", "", entry.get("title", ""))).strip()
+                    link = entry.get("link", "")
+                    source = entry.get("source") or {}
+                    publisher = source.get("title", "") if hasattr(source, "get") else ""
+                    # Google RSS often appends the publisher after a dash.
+                    if not publisher and " - " in title:
+                        publisher = title.rsplit(" - ", 1)[-1]
+                    if add(db, title, link, topic, publisher):
+                        counts[topic] += 1
+                db.commit()
+            except Exception as exc:
+                LOG.warning("Cannot fetch %s: %s", topic, exc)
     finally:
-        conn.close()
-    LOG.info("Collected %s new articles", added)
-    return added
+        db.close()
+    LOG.info("Added article links by topic: %s", dict(counts))
+    return dict(counts)
 
-def telegram(method, data):
+def telegram(method: str, payload: dict):
     if not TOKEN:
-        raise RuntimeError("TELEGRAM_BOT_TOKEN is not configured")
-    resp = requests.post("https://api.telegram.org/bot" + TOKEN + "/" + method, json=data, timeout=30)
-    resp.raise_for_status()
-    result = resp.json()
-    if not result.get("ok"):
-        raise RuntimeError("Telegram delivery error: " + str(result.get("description")))
-    return result["result"]
+        raise RuntimeError("TELEGRAM_BOT_TOKEN is missing")
+    res = requests.post(f"https://api.telegram.org/bot{TOKEN}/{method}", json=payload, timeout=35)
+    res.raise_for_status()
+    data = res.json()
+    if not data.get("ok"):
+        raise RuntimeError(data.get("description", "Telegram error"))
+    return data.get("result")
 
-def discover_chat():
+def send(text: str, chat_id: str | int = CHAT_ID):
+    if not chat_id:
+        raise RuntimeError("TELEGRAM_CHAT_ID is missing")
+    return telegram("sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+
+def chat_ids():
     if not TOKEN:
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN")
-    response = requests.get("https://api.telegram.org/bot" + TOKEN + "/getUpdates", timeout=30)
-    response.raise_for_status()
-    updates = response.json().get("result", [])
-    matches = [(u.get("message") or {}).get("chat", {}) for u in updates]
-    ids = [(c.get("id"), c.get("type")) for c in matches if c.get("id")]
-    print("Recent chat IDs and types:", ids or "None: send /start to your bot first")
+        raise RuntimeError("Set TELEGRAM_BOT_TOKEN first")
+    res = requests.get(f"https://api.telegram.org/bot{TOKEN}/getUpdates", timeout=25)
+    res.raise_for_status()
+    for u in res.json().get("result", []):
+        c = (u.get("message") or {}).get("chat", {})
+        if c:
+            print("chat_id=", c.get("id"), "type=", c.get("type"))
 
-def digest(slot=None):
+def _candidates(db: sqlite3.Connection):
+    # Distribute places across topics rather than allowing one trending topic to dominate.
+    rows = db.execute(
+        "SELECT e.id,e.title,e.topic,e.first_seen,"
+        "(SELECT url FROM articles a WHERE a.event_id=e.id ORDER BY a.seen ASC LIMIT 1) url,"
+        "(SELECT COUNT(*) FROM articles a WHERE a.event_id=e.id) sources "
+        "FROM events e WHERE e.last_sent IS NULL ORDER BY e.first_seen DESC LIMIT 350"
+    ).fetchall()
+    groups = defaultdict(list)
+    for row in rows:
+        groups[row["topic"]].append(row)
+    chosen = []
+    while len(chosen) < MAX_ITEMS and any(groups.values()):
+        for topic in TOPICS:
+            if groups[topic] and len(chosen) < MAX_ITEMS:
+                chosen.append(groups[topic].pop(0))
+    return chosen
+
+def digest(slot: str | None = None):
     if not CHAT_ID:
-        raise RuntimeError("Set TELEGRAM_CHAT_ID after sending /start")
-    now = dt.datetime.now(TZ)
-    slot = slot or (now.strftime("%Y-%m-%d") + "-" + ("morning" if now.hour < 14 else "evening"))
-    conn = connect()
+        raise RuntimeError("Configure TELEGRAM_CHAT_ID in Railway first")
+    local = dt.datetime.now(TZ)
+    slot = slot or local.strftime("%Y-%m-%d") + ("-AM" if local.hour < 14 else "-PM")
+    db = connect()
     try:
-        if conn.execute("SELECT 1 FROM deliveries WHERE slot=?", (slot,)).fetchone():
-            LOG.info("Already delivered %s", slot)
-            return
-        articles = conn.execute(
-            "SELECT * FROM articles WHERE sent=0 ORDER BY id DESC LIMIT ?", (MAX_ITEMS,)
-        ).fetchall()
-        header = "Новинний дайджест · " + now.strftime("%d.%m.%Y %H:%M") + " (Київ)"
-        if articles:
-            lines = [header, "", "Огляд джерел; повідомлення не означають незалежне підтвердження."]
-            for i, article in enumerate(articles, 1):
-                lines.append(
-                    "\n" + str(i) + ". [" + article["topic"] + "] "
-                    + article["title"] + "\n" + article["url"]
-                )
-            message = "\n".join(lines)
+        if db.execute("SELECT 1 FROM deliveries WHERE slot=?", (slot,)).fetchone():
+            LOG.info("Digest %s already delivered", slot)
+            return 0
+        items = _candidates(db)
+        header = "MONOLIT NEWS AI | " + local.strftime("%d.%m.%Y %H:%M") + " (Київ)"
+        if not items:
+            send(header + "\n\nНових повідомлень поки немає.")
         else:
-            message = header + "\n\nНових повідомлень за вибраними темами поки немає."
-        # Telegram message limit: split at article boundaries if needed.
-        chunks = []
-        current = ""
-        for paragraph in message.split("\n\n"):
-            candidate = (current + "\n\n" + paragraph) if current else paragraph
-            if len(candidate) > 3900 and current:
-                chunks.append(current)
-                current = paragraph
-            else:
-                current = candidate
-        if current:
-            chunks.append(current)
-        for part in chunks:
-            telegram("sendMessage", {"chat_id": CHAT_ID, "text": part[:3900], "disable_web_page_preview": True})
-        for article in articles:
-            conn.execute("UPDATE articles SET sent=1 WHERE id=?", (article["id"],))
-        conn.execute("INSERT INTO deliveries(slot,completed) VALUES(?,?)", (slot, now.isoformat()))
-        conn.commit()
-        LOG.info("Delivered %s (%s articles)", slot, len(articles))
+            send(header + f"\n{len(items)} різних подій. Дані джерел не є незалежним підтвердженням.")
+            for index, item in enumerate(items, 1):
+                message = (f"{index}. [{item['topic']}] {item['title']}\n"
+                           f"Джерел у стрічці: {item['sources']}\n{item['url']}")
+                send(message[:3900])
+                # Mark each event after Telegram confirms successful delivery.
+                db.execute("UPDATE events SET last_sent=? WHERE id=?", (NOW().isoformat(), item["id"]))
+                db.commit()
+                time.sleep(.08)
+        db.execute("INSERT INTO deliveries(slot,sent_at) VALUES(?,?)", (slot, NOW().isoformat()))
+        db.commit()
+        LOG.info("Digest %s delivered (%d events)", slot, len(items))
+        return len(items)
     finally:
-        conn.close()
+        db.close()
 
-def scheduled_digest(name):
-    collect()
-    digest(dt.datetime.now(TZ).strftime("%Y-%m-%d") + "-" + name)
+def commands():
+    # /chatid works for anyone, but never auto-binds an unauthorized user's chat.
+    db = connect()
+    try:
+        offset_row = db.execute("SELECT val FROM state WHERE key='telegram_offset'").fetchone()
+        offset = int(offset_row["val"]) if offset_row else 0
+        result = telegram("getUpdates", {"offset": offset, "timeout": 0, "allowed_updates": ["message"]})
+        for update in result:
+            message = update.get("message") or {}
+            chat = message.get("chat") or {}
+            chat_id, cmd = chat.get("id"), (message.get("text") or "").split(" ", 1)[0].split("@")[0]
+            if chat_id and cmd in ("/start", "/chatid"):
+                send(f"Ваш Telegram Chat ID: {chat_id}\n"
+                     "Додайте цей ID до TELEGRAM_CHAT_ID у захищених змінних Railway.",
+                     chat_id)
+            elif chat_id and str(chat_id) == CHAT_ID and cmd == "/now":
+                collect()
+                digest("manual-" + str(update["update_id"]))
+            elif chat_id and str(chat_id) == CHAT_ID and cmd == "/help":
+                send("/now — отримати новий дайджест\n/chatid — дізнатися Chat ID", chat_id)
+            offset = update["update_id"] + 1
+            db.execute("INSERT INTO state(key,val) VALUES('telegram_offset',?) "
+                       "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (str(offset),))
+            db.commit()
+    finally:
+        db.close()
 
 def run():
-    if not TOKEN or not CHAT_ID:
-        raise RuntimeError("Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in hosting variables")
+    if not TOKEN:
+        raise RuntimeError("Configure TELEGRAM_BOT_TOKEN in Railway")
     collect()
     scheduler = BlockingScheduler(timezone=TZ)
-    scheduler.add_job(collect, "interval", minutes=30, id="collect", max_instances=1, coalesce=True)
-    scheduler.add_job(
-        scheduled_digest, "cron", hour=int(os.getenv("MORNING_HOUR", "8")), minute=0,
-        args=["morning"], id="morning", max_instances=1, misfire_grace_time=3600
-    )
-    scheduler.add_job(
-        scheduled_digest, "cron", hour=int(os.getenv("EVENING_HOUR", "20")), minute=0,
-        args=["evening"], id="evening", max_instances=1, misfire_grace_time=3600
-    )
-    LOG.info("Started for timezone %s", TZ)
+    scheduler.add_job(collect, "interval", minutes=30, id="collect", coalesce=True, max_instances=1)
+    scheduler.add_job(commands, "interval", seconds=20, id="commands", coalesce=True, max_instances=1)
+    scheduler.add_job(lambda: (collect(), digest()), "cron", hour=int(os.getenv("MORNING_HOUR", "8")),
+                      minute=0, id="morning", misfire_grace_time=3600)
+    scheduler.add_job(lambda: (collect(), digest()), "cron", hour=int(os.getenv("EVENING_HOUR", "20")),
+                      minute=0, id="evening", misfire_grace_time=3600)
+    LOG.info("MONOLIT NEWS AI started: %s", TZ)
     scheduler.start()
 
 if __name__ == "__main__":
-    command = sys.argv[1] if len(sys.argv) > 1 else "run"
-    if command == "chat-id":
-        discover_chat()
-    elif command == "test-send":
-        telegram("sendMessage", {"chat_id": CHAT_ID, "text": "Тест: агрегатор новин підключено."})
-    elif command == "collect":
-        collect()
-    elif command == "once":
-        collect()
-        digest("manual-" + str(int(time.time())))
-    elif command == "run":
+    import sys
+    choice = sys.argv[1] if len(sys.argv) > 1 else "run"
+    if choice == "run":
         run()
+    elif choice == "collect":
+        print(collect())
+    elif choice == "chat-id":
+        chat_ids()
+    elif choice == "once":
+        collect()
+        print("Sent:", digest("manual-" + str(int(time.time()))))
+    elif choice == "test-send":
+        send("MONOLIT NEWS AI: тестове повідомлення.")
     else:
-        raise SystemExit("Use: run | collect | once | test-send | chat-id")
+        raise SystemExit("Commands: run, collect, chat-id, once, test-send")
