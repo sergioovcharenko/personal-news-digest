@@ -143,7 +143,7 @@ class NewsTests(unittest.TestCase):
         with patch.object(main, "send") as mock_send:
             main.handle_action("start", 123, 1)
             mock_send.assert_called_once()
-            self.assertEqual(mock_send.call_args.kwargs["reply_markup"], keyboard)
+            self.assertEqual(mock_send.call_args.kwargs["reply_markup"], main.persistent_keyboard())
             self.assertIn("\n", mock_send.call_args.args[0])
 
     def test_persistent_keyboard_and_startup_announcement(self):
