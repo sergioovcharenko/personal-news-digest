@@ -135,5 +135,29 @@ class NewsTests(unittest.TestCase):
         self.assertTrue(ok)
         self.assertEqual(title, "Новий прорив у робототехніці")
 
+
+    def test_telegram_menu_has_working_actions(self):
+        keyboard = main.menu_keyboard()
+        actions = [button["callback_data"] for row in keyboard["inline_keyboard"] for button in row]
+        self.assertEqual(actions, ["news", "topics", "sources", "help"])
+        with patch.object(main, "send") as mock_send:
+            main.handle_action("start", 123, 1)
+            mock_send.assert_called_once()
+            self.assertEqual(mock_send.call_args.kwargs["reply_markup"], keyboard)
+            self.assertIn("\\n", mock_send.call_args.args[0])
+
+    def test_news_button_rejects_other_chats(self):
+        with patch.object(main, "CHAT_ID", "owner-test-id"), patch.object(main, "collect") as collect, patch.object(main, "digest") as digest, patch.object(main, "send") as mock_send:
+            main.handle_action("news", 555, 2)
+            collect.assert_not_called()
+            digest.assert_not_called()
+            mock_send.assert_called_once()
+
+    def test_news_button_runs_for_owner(self):
+        with patch.object(main, "CHAT_ID", "555"), patch.object(main, "collect") as collect, patch.object(main, "digest") as digest:
+            main.handle_action("news", 555, 5)
+            collect.assert_called_once()
+            digest.assert_called_once_with("manual-5")
+
 if __name__ == "__main__":
     unittest.main()
