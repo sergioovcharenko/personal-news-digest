@@ -59,8 +59,8 @@ def connect():
     return conn
 
 def normalize(title):
-    title = re.sub(r"\\s+[-–—|]\\s+[^-–—|]{3,55}$", "", title)
-    title = re.sub(r"[^\\w\\s]", " ", title.casefold())
+    title = re.sub(r"\s+[-–—|]\s+[^-–—|]{3,55}$", "", title)
+    title = re.sub(r"[^\w\s]", " ", title.casefold())
     return " ".join(title.split())
 
 def near_duplicate(conn, norm):
