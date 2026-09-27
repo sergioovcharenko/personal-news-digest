@@ -146,6 +146,15 @@ class NewsTests(unittest.TestCase):
             self.assertEqual(mock_send.call_args.kwargs["reply_markup"], keyboard)
             self.assertIn("\n", mock_send.call_args.args[0])
 
+    def test_persistent_keyboard_and_startup_announcement(self):
+        keys = main.persistent_keyboard()
+        self.assertTrue(keys["is_persistent"])
+        self.assertEqual(keys["keyboard"][0][0]["text"], "📰 Новини зараз")
+        with patch.object(main, "CHAT_ID", "555"), patch.object(main, "show_menu") as show_menu:
+            main.announce_menu_once()
+            main.announce_menu_once()
+            show_menu.assert_called_once_with("555")
+
     def test_news_button_rejects_other_chats(self):
         with patch.object(main, "CHAT_ID", "owner-test-id"), patch.object(main, "collect") as collect, patch.object(main, "digest") as digest, patch.object(main, "send") as mock_send:
             main.handle_action("news", 555, 2)
