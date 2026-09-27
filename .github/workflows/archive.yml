@@ -1,0 +1,18 @@
+name: Downloadable source ZIP
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - .github/workflows/archive.yml
+jobs:
+  archive:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Create code archive
+        run: zip -qr MONOLIT-NEWS-AI-v0.2.zip . -x '.git/*' -x '.env' -x '*.db' -x '*.session' -x '__pycache__/*'
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MONOLIT-NEWS-AI-v0.2
+          path: MONOLIT-NEWS-AI-v0.2.zip
+          retention-days: 30
