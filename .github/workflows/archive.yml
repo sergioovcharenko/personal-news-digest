@@ -10,9 +10,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Create code archive
-        run: zip -qr MONOLIT-NEWS-AI-v0.2.zip . -x '.git/*' -x '.env' -x '*.db' -x '*.session' -x '__pycache__/*'
+        run: zip -qr DailyAllNews-v0.2.zip . -x '.git/*' -x '.env' -x '*.db' -x '*.session' -x '__pycache__/*'
       - uses: actions/upload-artifact@v4
         with:
-          name: MONOLIT-NEWS-AI-v0.2
-          path: MONOLIT-NEWS-AI-v0.2.zip
+          name: DailyAllNews-v0.2
+          path: DailyAllNews-v0.2.zip
           retention-days: 30
