@@ -104,6 +104,19 @@ class NewsTests(unittest.TestCase):
         self.assertIn("x=1&amp;y=2", msg)
         self.assertIn("Читати джерело", msg)
 
+    def test_structured_description(self):
+        items = [
+            {"id": 1, "title": "New policy measures announced", "summary": "Officials published a detailed proposal.",
+             "topic": "Політика", "url": "https://news.example/story", "sources": 1},
+        ]
+        msg, ids = main.compose_digest(items, dt.datetime(2026,9,27,20),
+            title_transform=lambda x: ({"New policy measures announced": "Оголошено нові заходи політики",
+                                        "Officials published a detailed proposal.": "Посадовці опублікували докладну пропозицію."}.get(x,x), True))
+        self.assertEqual(ids, [1])
+        self.assertIn("🏛️ <b>Політика</b>", msg)
+        self.assertIn("Оголошено нові заходи політики", msg)
+        self.assertIn("Коротко: Посадовці опублікували", msg)
+
     def test_translation_uses_cache(self):
         self.db.execute(
             "INSERT INTO translated_titles(source,ukrainian,translated_at) VALUES(?,?,?)",
