@@ -7,6 +7,7 @@ import datetime as dt
 import difflib
 import html
 import json
+import functools
 import logging
 import os
 import re
@@ -22,6 +23,10 @@ import feedparser
 import requests
 from apscheduler.schedulers.blocking import BlockingScheduler
 from dotenv import load_dotenv
+from deep_translator import GoogleTranslator
+from langdetect import detect, DetectorFactory
+
+DetectorFactory.seed = 0
 
 load_dotenv()
 LOG = logging.getLogger("dailyallnews")
@@ -31,7 +36,21 @@ TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "").strip()
 DB_PATH = Path(os.getenv("DB_PATH", "news.db"))
 MAX_ITEMS = max(1, min(30, int(os.getenv("MAX_ITEMS_PER_DIGEST", "16"))))
-HEADERS = {"User-Agent": "DailyAllNews/0.2 (personal news aggregator)"}
+HEADERS = {"User-Agent": "DailyAllNews/0.3 (personal news aggregator)"}
+
+BOT_DESCRIPTION = ("Персональний агрегатор новин України та світу: війна, політика, БпЛА, "
+                   "робототехніка, ШІ, військові технології, кібербезпека й електроніка. "
+                   "Групує схожі повідомлення, перекладає іноземні заголовки українською "
+                   "та надсилає один дайджест о 08:00 і 20:00 за Києвом. "
+                   "Посилання на першоджерела додаються до кожної події.")
+BOT_SHORT_DESCRIPTION = "Головні новини без повторів. Українською, двічі на день."
+TOPIC_ICONS = {
+    "БпЛА та робототехніка": "🛩️", "Штучний інтелект": "🧠",
+    "Україна та світ": "🌍", "Військові технології": "🛡️",
+    "Кібербезпека": "🔐", "Технології та електроніка": "💻",
+    "Війна": "📍", "Політика": "🏛️",
+}
+
 NOW = lambda: dt.datetime.now(dt.timezone.utc)
 TOPICS = {
     "БпЛА та робототехніка": ["drone UAV robotics", "безпілотники робототехніка"],
@@ -74,6 +93,8 @@ def connect() -> sqlite3.Connection:
     db.execute("CREATE TABLE IF NOT EXISTS deliveries("
                "slot TEXT PRIMARY KEY, sent_at TEXT NOT NULL)")
     db.execute("CREATE TABLE IF NOT EXISTS state(key TEXT PRIMARY KEY, val TEXT NOT NULL)")
+    db.execute("CREATE TABLE IF NOT EXISTS translated_titles("
+               "source TEXT PRIMARY KEY, ukrainian TEXT NOT NULL, translated_at TEXT NOT NULL)")
     db.commit()
     return db
 
@@ -165,10 +186,13 @@ def telegram(method: str, payload: dict):
         raise RuntimeError(data.get("description", "Telegram error"))
     return data.get("result")
 
-def send(text: str, chat_id: str | int = CHAT_ID):
+def send(text: str, chat_id: str | int = CHAT_ID, parse_mode: str | None = None):
     if not chat_id:
         raise RuntimeError("TELEGRAM_CHAT_ID is missing")
-    return telegram("sendMessage", {"chat_id": chat_id, "text": text, "disable_web_page_preview": True})
+    payload = {"chat_id": chat_id, "text": text, "disable_web_page_preview": True}
+    if parse_mode:
+        payload["parse_mode"] = parse_mode
+    return telegram("sendMessage", payload)
 
 def chat_ids():
     if not TOKEN:
@@ -198,38 +222,96 @@ def _candidates(db: sqlite3.Connection):
                 chosen.append(groups[topic].pop(0))
     return chosen
 
-def compose_digest(items, local, limit=3900):
-    """Fit a complete digest into a single Telegram message (max 4096 chars).
+def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
+    """Translate a foreign-language headline to Ukrainian, cache only successful translations.
 
-    Returns the message and only the event IDs actually included; any overflow
-    remains unsent in SQLite for the next digest.
+    The translation service is best effort. When it is unavailable, retain the
+    original instead of inventing a summary or reporting an unverified translation.
     """
-    header = ("Daily All News | " + local.strftime("%d.%m.%Y %H:%M") +
-              " (Київ)\nНезалежне підтвердження повідомлень не гарантується.")
+    title = str(title).strip()
+    row = db.execute("SELECT ukrainian FROM translated_titles WHERE source=?", (title,)).fetchone()
+    if row:
+        return row["ukrainian"], True
+    # Titles with substantial Ukrainian Cyrillic should not be machine-translated.
+    try:
+        detected = detect(title)
+    except Exception:
+        detected = "unknown"
+    if detected == "uk":
+        return title, True
+    try:
+        translated = GoogleTranslator(source="auto", target="uk").translate(title)
+        if translated and translated.strip() and translated.strip() != title:
+            translated = translated.strip()
+            db.execute("INSERT OR REPLACE INTO translated_titles(source,ukrainian,translated_at) "
+                       "VALUES(?,?,?)", (title, translated, NOW().isoformat()))
+            db.commit()
+            return translated, True
+    except Exception as exc:
+        LOG.warning("Headline translation unavailable; original retained: %s", type(exc).__name__)
+    return title, False
+
+
+def setup_bot_profile():
+    """Configure the bot description and visible commands without requiring BotFather UI."""
+    for method, payload in (
+        ("setMyDescription", {"description": BOT_DESCRIPTION, "language_code": "uk"}),
+        ("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION, "language_code": "uk"}),
+        ("setMyCommands", {"commands": [
+            {"command": "now", "description": "Отримати свіжі новини одним повідомленням"},
+            {"command": "help", "description": "Довідка та розклад"},
+            {"command": "chatid", "description": "Показати Chat ID"},
+        ]}),
+    ):
+        try:
+            telegram(method, payload)
+        except Exception as exc:
+            LOG.warning("Cannot configure Telegram profile %s: %s", method, type(exc).__name__)
+
+
+def compose_digest(items, local, limit=3900, title_transform=None):
+    """Build one categorized HTML Telegram message and IDs of included events."""
+    title_transform = title_transform or (lambda title: (title, True))
+    header = ("📰 <b>Daily All News</b>\n" + local.strftime("%d.%m.%Y · %H:%M") +
+              " · Київ\n<i>Новини з посиланнями на джерела. Повідомлення не є незалежним підтвердженням.</i>")
     if not items:
         return header + "\n\nНових повідомлень поки немає.", []
-    lines, included = [header], []
+    blocks, included = [header], []
+    last_topic = None
     for item in items:
-        title = str(item["title"]).strip()
-        if len(title) > 145:
-            title = title[:142].rstrip() + "..."
+        original = str(item["title"]).strip()
+        title, translated = title_transform(original)
+        title = title[:180].strip()
+        title = html.escape(title)
         url = str(item["url"] or "")
-        # Extremely long URLs can otherwise take most of Telegram's message.
-        if len(url) > 350:
+        if len(url) > 1800 or not url.startswith(("https://", "http://")):
             continue
-        block = (f"\n{len(included) + 1}. [{item['topic']}] {title}\n"
-                 f"Джерел: {item['sources']} · {url}")
-        if len("\n".join(lines)) + len(block) + 65 > limit:
+        topic = str(item["topic"])
+        separator = ""
+        if topic != last_topic:
+            separator = "\n\n" + TOPIC_ICONS.get(topic, "🗞️") + " <b>" + html.escape(topic) + "</b>"
+        # Note original language when a translation service is unavailable.
+        note = "" if translated else "\n<i>Оригінал: автоматичний переклад недоступний</i>"
+        sources = int(item["sources"])
+        source_label = "публікація" if sources == 1 else "публікації" if sources in (2, 3, 4) else "публікацій"
+        link = '<a href="' + html.escape(url, quote=True) + '">Читати джерело ↗</a>'
+        block = (separator + "\n" + str(len(included) + 1) + ". " + title +
+                 note + "\n" + str(sources) + " " + source_label + " · " + link)
+        # Telegram counts visible text and entities; being conservative also
+        # keeps the HTML raw payload below the official 4096-char limit.
+        if len("".join(blocks)) + len(block) + 130 > limit:
             break
-        lines.append(block)
+        blocks.append(block)
         included.append(item["id"])
+        last_topic = topic
     remaining = len(items) - len(included)
     if remaining:
-        lines.append(f"\nЩе {remaining} подій залишено для наступного огляду.")
+        blocks.append("\n\n<i>Інші " + str(remaining) + " подій залишено на наступний огляд.</i>")
     if not included:
-        # Do not claim the digest delivered any events if nothing fits.
-        lines.append("\nНовин у форматі короткого повідомлення поки немає.")
-    return "\n".join(lines), included
+        blocks.append("\n\nНовин у форматі короткого огляду поки немає.")
+    text = "".join(blocks)
+    # Reserve a little room for overflow lines. Enforce one Telegram message.
+    return text[:limit], included
 
 
 def digest(slot: str | None = None):
@@ -243,9 +325,9 @@ def digest(slot: str | None = None):
             LOG.info("Digest %s already delivered", slot)
             return 0
         items = _candidates(db)
-        text, ids = compose_digest(items, local)
-        # Exactly one sendMessage call per digest, including manual /now.
-        send(text)
+        text, ids = compose_digest(items, local, title_transform=lambda title: translate_title(db, title))
+        # Exactly one HTML-formatted message per digest, including manual /now.
+        send(text, parse_mode="HTML")
         when = NOW().isoformat()
         if ids:
             db.executemany("UPDATE events SET last_sent=? WHERE id=?",
@@ -276,7 +358,9 @@ def commands():
                 collect()
                 digest("manual-" + str(update["update_id"]))
             elif chat_id and str(chat_id) == CHAT_ID and cmd == "/help":
-                send("/now — отримати новий дайджест\n/chatid — дізнатися Chat ID", chat_id)
+                send("/now — отримати свіжий дайджест\n"
+                     "/chatid — дізнатися Chat ID\n"
+                     "Розклад: 08:00 та 20:00 за Києвом.", chat_id)
             offset = update["update_id"] + 1
             db.execute("INSERT INTO state(key,val) VALUES('telegram_offset',?) "
                        "ON CONFLICT(key) DO UPDATE SET val=excluded.val", (str(offset),))
@@ -287,6 +371,7 @@ def commands():
 def run():
     if not TOKEN:
         raise RuntimeError("Configure TELEGRAM_BOT_TOKEN in Railway")
+    setup_bot_profile()
     collect()
     scheduler = BlockingScheduler(timezone=TZ)
     scheduler.add_job(collect, "interval", minutes=30, id="collect", coalesce=True, max_instances=1)
