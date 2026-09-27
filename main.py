@@ -297,12 +297,15 @@ def _candidates(db: sqlite3.Connection):
                 chosen.append(groups[topic].pop(0))
     return chosen
 
+TRANSLATION_BACKOFF_UNTIL = 0.0
+
 def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
     """Translate a foreign-language headline to Ukrainian, cache only successful translations.
 
     The translation service is best effort. When it is unavailable, retain the
     original instead of inventing a summary or reporting an unverified translation.
     """
+    global TRANSLATION_BACKOFF_UNTIL
     title = str(title).strip()
     row = db.execute("SELECT ukrainian FROM translated_titles WHERE source=?", (title,)).fetchone()
     if row:
@@ -314,6 +317,8 @@ def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
         detected = "unknown"
     if detected == "uk":
         return title, True
+    if time.monotonic() < TRANSLATION_BACKOFF_UNTIL:
+        return title, False
     try:
         translated = GoogleTranslator(source="auto", target="uk").translate(title)
         if translated and translated.strip() and translated.strip() != title:
@@ -323,6 +328,8 @@ def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
             db.commit()
             return translated, True
     except Exception as exc:
+        if type(exc).__name__ in ("TooManyRequests", "RequestError"):
+            TRANSLATION_BACKOFF_UNTIL = time.monotonic() + 900
         LOG.warning("Headline translation unavailable; original retained: %s", type(exc).__name__)
     return title, False
 
