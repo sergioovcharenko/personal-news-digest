@@ -267,6 +267,8 @@ def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
 def setup_bot_profile():
     """Configure the bot description and visible commands without requiring BotFather UI."""
     for method, payload in (
+        ("setMyDescription", {"description": BOT_DESCRIPTION}),
+        ("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION}),
         ("setMyDescription", {"description": BOT_DESCRIPTION, "language_code": "uk"}),
         ("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION, "language_code": "uk"}),
         ("setMyCommands", {"commands": [
@@ -314,7 +316,7 @@ def compose_digest(items, local, limit=3900, title_transform=None):
             if len(brief) > 125:
                 brief = brief[:122].rsplit(" ", 1)[0] + "…"
             if brief and normalize(brief) != normalize(original):
-                note += "\\n<i>Коротко: " + html.escape(brief) + "</i>"
+                note += "\n<i>Коротко: " + html.escape(brief) + "</i>"
                 if not brief_translated:
                     note += " <i>(оригінал)</i>"
         sources = int(item["sources"])
