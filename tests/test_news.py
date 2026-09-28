@@ -139,7 +139,7 @@ class NewsTests(unittest.TestCase):
     def test_telegram_menu_has_working_actions(self):
         keyboard = main.menu_keyboard()
         actions = [button["callback_data"] for row in keyboard["inline_keyboard"] for button in row]
-        self.assertEqual(actions, ["news", "topics", "sources", "help"])
+        self.assertEqual(actions, ["news", "topics", "sources", "settings", "help"])
         with patch.object(main, "send") as mock_send:
             main.handle_action("start", 123, 1)
             mock_send.assert_called_once()
@@ -195,6 +195,21 @@ class NewsTests(unittest.TestCase):
             title_transform=lambda text: (text, False))
         self.assertEqual(ids, [])
         self.assertNotIn("Foreign headline", msg)
+
+
+    def test_styled_digest_and_settings(self):
+        items = [{"id": 1, "title": "Новий український дрон", "summary": "Короткий опис події.",
+                  "topic": "БпЛА та дрони", "url": "https://example.com/a", "sources": 3}]
+        msg, ids = main.compose_digest(items, dt.datetime(2026, 9, 28, 8))
+        self.assertEqual(ids, [1])
+        self.assertIn("━━━━━━━━━━━━━━", msg)
+        self.assertIn("🔎 3", msg)
+        self.assertIn("<b>1. Новий український дрон</b>", msg)
+        with patch.object(main, "send") as mock_send:
+            main.show_settings(123)
+            mock_send.assert_called_once()
+            self.assertIn("Налаштування", mock_send.call_args.args[0])
+            self.assertEqual(mock_send.call_args.kwargs["parse_mode"], "HTML")
 
 if __name__ == "__main__":
     unittest.main()
