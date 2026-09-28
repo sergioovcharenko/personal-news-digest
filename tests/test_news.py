@@ -30,9 +30,9 @@ class NewsTests(unittest.TestCase):
 
     def test_identical_headlines_different_url_one_event(self):
         self.assertTrue(main.add(self.db, "New Ukrainian robotics system released",
-                                  "https://first.example/a", "БпЛА та робототехніка"))
+                                  "https://first.example/a", "БпЛА та дрони"))
         self.assertTrue(main.add(self.db, "New Ukrainian robotics system released - Site B",
-                                  "https://second.example/b", "БпЛА та робототехніка"))
+                                  "https://second.example/b", "БпЛА та дрони"))
         self.db.commit()
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 1)
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM articles").fetchone()[0], 2)
@@ -45,7 +45,7 @@ class NewsTests(unittest.TestCase):
 
     def test_different_events_not_merged(self):
         self.assertTrue(main.add(self.db, "Robotics laboratory announces underwater vehicle",
-                                  "https://site.example/a", "БпЛА та робототехніка"))
+                                  "https://site.example/a", "БпЛА та дрони"))
         self.assertTrue(main.add(self.db, "Cybersecurity firm discovers a browser exploit",
                                   "https://site.example/b", "Кібербезпека"))
         self.assertEqual(self.db.execute("SELECT COUNT(*) FROM events").fetchone()[0], 2)
@@ -53,7 +53,7 @@ class NewsTests(unittest.TestCase):
     def test_balanced_topics(self):
         for i in range(4):
             main.add(self.db, f"Drone manufacturer releases aircraft model {i} with improvements",
-                     f"https://site.example/d{i}", "БпЛА та робототехніка")
+                     f"https://site.example/d{i}", "БпЛА та дрони")
         main.add(self.db, "Cybersecurity experts publish detailed advisory",
                  "https://site.example/c", "Кібербезпека")
         self.db.commit()
@@ -63,7 +63,7 @@ class NewsTests(unittest.TestCase):
 
     def test_digest_uses_single_telegram_message(self):
         main.add(self.db, "Robotics team reveals upgraded aircraft model",
-                 "https://example.com/drone", "БпЛА та робототехніка")
+                 "https://example.com/drone", "БпЛА та дрони")
         main.add(self.db, "Security researchers discover an important vulnerability",
                  "https://example.com/security", "Кібербезпека")
         self.db.commit()
@@ -107,13 +107,13 @@ class NewsTests(unittest.TestCase):
     def test_structured_description(self):
         items = [
             {"id": 1, "title": "New policy measures announced", "summary": "Officials published a detailed proposal.",
-             "topic": "Політика", "url": "https://news.example/story", "sources": 1},
+             "topic": "Політика та дипломатія", "url": "https://news.example/story", "sources": 1},
         ]
         msg, ids = main.compose_digest(items, dt.datetime(2026,9,27,20),
             title_transform=lambda x: ({"New policy measures announced": "Оголошено нові заходи політики",
                                         "Officials published a detailed proposal.": "Посадовці опублікували докладну пропозицію."}.get(x,x), True))
         self.assertEqual(ids, [1])
-        self.assertIn("🏛️ <b>Політика</b>", msg)
+        self.assertIn("🏛️ <b>Політика та дипломатія</b>", msg)
         self.assertIn("Оголошено нові заходи політики", msg)
         self.assertIn("Коротко: Посадовці опублікували", msg)
 
@@ -167,6 +167,34 @@ class NewsTests(unittest.TestCase):
             main.handle_action("news", 555, 5)
             collect.assert_called_once()
             digest.assert_called_once_with("manual-5")
+
+
+    def test_selected_filters_exactly_match_user_choice(self):
+        self.assertEqual(list(main.TOPICS), [
+            "БпЛА та дрони",
+            "Робототехніка",
+            "Штучний інтелект",
+            "Україна",
+            "Війна в Україні",
+            "Військові технології",
+            "Кібербезпека",
+            "Технології та електроніка",
+            "Космос і супутники",
+            "Радіозв’язок та SDR",
+            "ArduPilot / PX4 / QGroundControl",
+            "Акумулятори та енергетика",
+            "Політика та дипломатія",
+            "Наука та дослідження",
+        ])
+
+    def test_untranslated_foreign_headline_is_not_sent(self):
+        items = [{"id": 1, "title": "Foreign headline", "summary": "",
+                  "topic": "Штучний інтелект", "url": "https://example.com/a", "sources": 1}]
+        msg, ids = main.compose_digest(
+            items, dt.datetime(2026, 9, 28, 20),
+            title_transform=lambda text: (text, False))
+        self.assertEqual(ids, [])
+        self.assertNotIn("Foreign headline", msg)
 
 if __name__ == "__main__":
     unittest.main()
