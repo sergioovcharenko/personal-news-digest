@@ -102,7 +102,7 @@ class NewsTests(unittest.TestCase):
         self.assertEqual(msg.count("<b>Штучний інтелект</b>"), 1)
         self.assertIn("AI &amp; machine &lt;learning&gt;", msg)
         self.assertIn("x=1&amp;y=2", msg)
-        self.assertIn("Читати джерело", msg)
+        self.assertIn("Відкрити джерело", msg)
 
     def test_structured_description(self):
         items = [
