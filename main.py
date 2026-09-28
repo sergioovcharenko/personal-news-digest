@@ -45,29 +45,82 @@ BOT_DESCRIPTION = ("Персональний агрегатор новин Ук�
                    "Посилання на першоджерела додаються до кожної події.")
 BOT_SHORT_DESCRIPTION = "Головні новини без повторів. Українською, двічі на день."
 TOPIC_ICONS = {
-    "БпЛА та робототехніка": "🛩️", "Штучний інтелект": "🧠",
-    "Україна та світ": "🌍", "Військові технології": "🛡️",
-    "Кібербезпека": "🔐", "Технології та електроніка": "💻",
-    "Війна": "📍", "Політика": "🏛️",
+    "БпЛА та дрони": "🛩️",
+    "Робототехніка": "🤖",
+    "Штучний інтелект": "🧠",
+    "Україна": "🇺🇦",
+    "Війна в Україні": "📍",
+    "Військові технології": "🛡️",
+    "Кібербезпека": "🔐",
+    "Технології та електроніка": "💻",
+    "Космос і супутники": "🛰️",
+    "Радіозв’язок та SDR": "📡",
+    "ArduPilot / PX4 / QGroundControl": "🧭",
+    "Акумулятори та енергетика": "🔋",
+    "Політика та дипломатія": "🏛️",
+    "Наука та дослідження": "🔬",
 }
 
 NOW = lambda: dt.datetime.now(dt.timezone.utc)
 TOPICS = {
-    "БпЛА та робототехніка": ["drone UAV robotics", "безпілотники робототехніка"],
-    "Штучний інтелект": ["artificial intelligence AI"],
-    "Україна та світ": ["Ukraine world international news"],
-    "Військові технології": ["defense military technology", "військові технології"],
-    "Кібербезпека": ["cybersecurity cyberattack"],
-    "Технології та електроніка": ["semiconductor electronics technology"],
-    "Війна": ["Ukraine war фронт"],
-    "Політика": ["Ukraine international politics diplomacy"],
+    "БпЛА та дрони": [
+        "drone UAV FPV unmanned aerial systems",
+        "БпЛА дрони FPV безпілотники",
+    ],
+    "Робототехніка": [
+        "robotics unmanned ground vehicle UGV unmanned surface vehicle USV",
+        "робототехніка наземні роботи морські дрони",
+    ],
+    "Штучний інтелект": [
+        "artificial intelligence AI OpenAI Anthropic Google DeepMind",
+    ],
+    "Україна": [
+        "Ukraine main news government economy society",
+        "Україна головні новини",
+    ],
+    "Війна в Україні": [
+        "Ukraine war frontline combat operations",
+        "війна в Україні фронт бойові дії",
+    ],
+    "Військові технології": [
+        "defense military technology electronic warfare air defense weapons",
+        "військові технології РЕБ ППО озброєння",
+    ],
+    "Кібербезпека": [
+        "cybersecurity cyber attack data breach vulnerability malware",
+    ],
+    "Технології та електроніка": [
+        "technology electronics semiconductors processors gadgets",
+    ],
+    "Космос і супутники": [
+        "space satellites Starlink launch vehicle rocket space technology",
+    ],
+    "Радіозв’язок та SDR": [
+        "radio communications SDR antennas telecom RF spectrum",
+        "радіозв’язок SDR антени телекомунікації",
+    ],
+    "ArduPilot / PX4 / QGroundControl": [
+        "ArduPilot PX4 QGroundControl autopilot MAVLink",
+    ],
+    "Акумулятори та енергетика": [
+        "battery technology energy storage lithium solid state battery",
+        "акумулятори енергетика нові батареї",
+    ],
+    "Політика та дипломатія": [
+        "Ukraine international politics diplomacy sanctions negotiations",
+        "політика дипломатія міжнародні відносини санкції",
+    ],
+    "Наука та дослідження": [
+        "science research breakthrough discovery study",
+        "наука дослідження відкриття",
+    ],
 }
 FEEDS = [
     (topic, f"https://news.google.com/rss/search?q={quote(query + ' when:2d')}&hl=uk&gl=UA&ceid=UA:uk")
     for topic, queries in TOPICS.items() for query in queries
 ]
 FEEDS += [
-    ("Україна та світ", "https://feeds.bbci.co.uk/news/world/rss.xml"),
+    ("Україна", "https://feeds.bbci.co.uk/news/world/rss.xml"),
     ("Технології та електроніка", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
     ("Штучний інтелект", "https://techcrunch.com/feed/"),
     ("Кібербезпека", "https://www.bleepingcomputer.com/feed/"),
@@ -382,6 +435,9 @@ def compose_digest(items, local, limit=3900, title_transform=None):
     for item in items:
         original = str(item["title"]).strip()
         title, translated = title_transform(original)
+        # Foreign headlines are included only after successful Ukrainian translation.
+        if not translated:
+            continue
         title = title[:180].strip()
         title = html.escape(title)
         url = str(item["url"] or "")
@@ -399,10 +455,8 @@ def compose_digest(items, local, limit=3900, title_transform=None):
             brief = brief.strip()
             if len(brief) > 125:
                 brief = brief[:122].rsplit(" ", 1)[0] + "…"
-            if brief and normalize(brief) != normalize(original):
+            if brief_translated and brief and normalize(brief) != normalize(original):
                 note += "\n<i>Коротко: " + html.escape(brief) + "</i>"
-                if not brief_translated:
-                    note += " <i>(оригінал)</i>"
         sources = int(item["sources"])
         source_label = "публікація" if sources == 1 else "публікації" if sources in (2, 3, 4) else "публікацій"
         link = '<a href="' + html.escape(url, quote=True) + '">Читати джерело ↗</a>'
