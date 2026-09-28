@@ -254,10 +254,11 @@ def telegram(method: str, payload: dict):
 def menu_keyboard():
     """Real Telegram inline buttons, distinct from a full Telegram Mini App."""
     return {"inline_keyboard": [
-        [{"text": "📰 Отримати новини", "callback_data": "news"},
+        [{"text": "📰 Новини зараз", "callback_data": "news"},
          {"text": "📚 Теми", "callback_data": "topics"}],
         [{"text": "🔗 Джерела", "callback_data": "sources"},
-         {"text": "ℹ️ Довідка", "callback_data": "help"}],
+         {"text": "⚙️ Налаштування", "callback_data": "settings"}],
+        [{"text": "ℹ️ Довідка", "callback_data": "help"}],
     ]}
 
 
@@ -265,8 +266,8 @@ def persistent_keyboard():
     """The Telegram keyboard appears above the text input and stays visible."""
     return {"keyboard": [
         [{"text": "📰 Новини зараз"}, {"text": "📚 Теми"}],
-        [{"text": "🔗 Джерела"}, {"text": "ℹ️ Довідка"}],
-        [{"text": "🏠 Меню"}],
+        [{"text": "🔗 Джерела"}, {"text": "⚙️ Налаштування"}],
+        [{"text": "ℹ️ Довідка"}, {"text": "🏠 Меню"}],
     ], "resize_keyboard": True, "is_persistent": True}
 
 
@@ -284,42 +285,64 @@ def send(text: str, chat_id: str | int = CHAT_ID,
 
 def show_menu(chat_id):
     return send(
-        "📰 Daily All News\n\n"
-        "Особистий огляд новин України та світу. "
-        "Один дайджест о 08:00 і 20:00 за Києвом. "
-        "Заголовки іноземних видань перекладаються українською.\n\n"
+        "📰 <b>Daily All News</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "Персональна стрічка без повторів.\n"
+        "🌐 Іноземні матеріали — українською.\n"
+        "🕗 Дайджести: 08:00 та 20:00 за Києвом.\n\n"
         "Оберіть дію:",
-        chat_id, reply_markup=persistent_keyboard(),
+        chat_id, parse_mode="HTML", reply_markup=persistent_keyboard(),
     )
 
 
 def show_topics(chat_id):
-    text = "📚 Теми твого дайджесту:\n\n" + "\n".join(
-        f"{TOPIC_ICONS.get(name, '•')} {name}" for name in TOPICS
+    text = "📚 <b>Теми дайджесту</b>\n━━━━━━━━━━━━━━\n" + "\n".join(
+        f"{TOPIC_ICONS.get(name, '•')} {html.escape(name)}" for name in TOPICS
     )
-    return send(text, chat_id, reply_markup=menu_keyboard())
+    return send(text, chat_id, parse_mode="HTML", reply_markup=menu_keyboard())
 
 
 def show_sources(chat_id):
     return send(
-        "🔗 Джерела: Google News RSS, BBC, TechCrunch і BleepingComputer.\n"
-        "До кожної новини додається посилання на публікацію. "
-        "Подібні заголовки об'єднуються, але це не гарантує перевірку фактів.\n\n"
-        "Telegram-канали поки не підключені.",
-        chat_id, reply_markup=menu_keyboard(),
+        "🔗 <b>Джерела</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "• Google News RSS\n"
+        "• BBC\n"
+        "• TechCrunch\n"
+        "• BleepingComputer\n\n"
+        "Кожна подія має посилання на публікацію. Схожі повідомлення об’єднуються.\n"
+        "<i>Telegram-канали поки не підключені.</i>",
+        chat_id, parse_mode="HTML", reply_markup=menu_keyboard(),
+    )
+
+
+def show_settings(chat_id):
+    active = len(TOPICS)
+    return send(
+        "⚙️ <b>Налаштування</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        f"📚 Активних тем: <b>{active}</b>\n"
+        f"🕗 Ранковий дайджест: <b>{os.getenv('MORNING_HOUR', '8')}:00</b>\n"
+        f"🌙 Вечірній дайджест: <b>{os.getenv('EVENING_HOUR', '20')}:00</b>\n"
+        "🌐 Мова: <b>українська</b>\n"
+        "🔁 Дублікати: <b>об’єднуються</b>\n"
+        "🔗 Формат: <b>одне повідомлення</b>",
+        chat_id, parse_mode="HTML", reply_markup=menu_keyboard(),
     )
 
 
 def show_help(chat_id):
     return send(
-        "ℹ️ Daily All News\n\n"
-        "/start або /menu — відкрити меню\n"
-        "/now — свіжий дайджест одним повідомленням\n"
+        "ℹ️ <b>Daily All News</b>\n"
+        "━━━━━━━━━━━━━━\n"
+        "/start — головне меню\n"
+        "/now — новини зараз\n"
         "/topics — теми\n"
         "/sources — джерела\n"
-        "/chatid — показати Chat ID\n\n"
-        "Розклад: 08:00 і 20:00 за Києвом.",
-        chat_id, reply_markup=menu_keyboard(),
+        "/settings — налаштування\n"
+        "/chatid — Chat ID\n\n"
+        "Автоматичні дайджести: <b>08:00</b> і <b>20:00</b> за Києвом.",
+        chat_id, parse_mode="HTML", reply_markup=menu_keyboard(),
     )
 
 def chat_ids():
@@ -390,6 +413,7 @@ def translate_title(db: sqlite3.Connection, title: str) -> tuple[str, bool]:
 def setup_bot_profile():
     """Configure the bot description and visible commands without requiring BotFather UI."""
     for method, payload in (
+        ("setMyName", {"name": "Daily All News"}),
         ("setMyDescription", {"description": BOT_DESCRIPTION}),
         ("setMyShortDescription", {"short_description": BOT_SHORT_DESCRIPTION}),
         ("setMyDescription", {"description": BOT_DESCRIPTION, "language_code": "uk"}),
@@ -410,6 +434,7 @@ def setup_bot_profile():
             {"command": "now", "description": "Отримати новини зараз"},
             {"command": "topics", "description": "Список тем"},
             {"command": "sources", "description": "Джерела новин"},
+            {"command": "settings", "description": "Налаштування"},
             {"command": "help", "description": "Довідка"},
             {"command": "chatid", "description": "Показати Chat ID"},
         ]}),
@@ -423,8 +448,10 @@ def setup_bot_profile():
 def compose_digest(items, local, limit=3900, title_transform=None):
     """Build one categorized HTML Telegram message and IDs of included events."""
     title_transform = title_transform or (lambda title: (title, True))
-    header = ("📰 <b>Daily All News</b>\n" + local.strftime("%d.%m.%Y · %H:%M") +
-              " · Київ\n<i>Новини з посиланнями на джерела. Повідомлення не є незалежним підтвердженням.</i>")
+    header = ("📰 <b>Daily All News</b>\n"
+              "━━━━━━━━━━━━━━\n"
+              "📅 " + local.strftime("%d.%m.%Y") + "   🕒 " + local.strftime("%H:%M") + "   📍 Київ\n"
+              "<i>Персональний дайджест без повторів</i>")
     if not items:
         return header + "\n\nНових повідомлень поки немає.", []
     blocks, included = [header], []
@@ -446,7 +473,7 @@ def compose_digest(items, local, limit=3900, title_transform=None):
         topic = str(item["topic"])
         separator = ""
         if topic != last_topic:
-            separator = "\n\n" + TOPIC_ICONS.get(topic, "🗞️") + " <b>" + html.escape(topic) + "</b>"
+            separator = "\n\n" + TOPIC_ICONS.get(topic, "🗞️") + " <b>" + html.escape(topic) + "</b>\n──────────────"
         # Note original language when a translation service is unavailable.
         note = "" if translated else "\n<i>Оригінал: автоматичний переклад недоступний</i>"
         description = str(item["summary"] or "").strip() if "summary" in item.keys() else ""
@@ -459,9 +486,9 @@ def compose_digest(items, local, limit=3900, title_transform=None):
                 note += "\n<i>Коротко: " + html.escape(brief) + "</i>"
         sources = int(item["sources"])
         source_label = "публікація" if sources == 1 else "публікації" if sources in (2, 3, 4) else "публікацій"
-        link = '<a href="' + html.escape(url, quote=True) + '">Читати джерело ↗</a>'
-        block = (separator + "\n" + str(len(included) + 1) + ". " + title +
-                 note + "\n" + str(sources) + " " + source_label + " · " + link)
+        link = '<a href="' + html.escape(url, quote=True) + '">Відкрити джерело ↗</a>'
+        block = (separator + "\n<b>" + str(len(included) + 1) + ". " + title + "</b>" +
+                 note + "\n🔎 " + str(sources) + " " + source_label + "   " + link)
         # Telegram counts visible text and entities; being conservative also
         # keeps the HTML raw payload below the official 4096-char limit.
         if len("".join(blocks)) + len(block) + 130 > limit:
@@ -471,7 +498,7 @@ def compose_digest(items, local, limit=3900, title_transform=None):
         last_topic = topic
     remaining = len(items) - len(included)
     if remaining:
-        blocks.append("\n\n<i>Інші " + str(remaining) + " подій залишено на наступний огляд.</i>")
+        blocks.append("\n\n━━━━━━━━━━━━━━\n<i>Ще " + str(remaining) + " подій залишено на наступний огляд.</i>")
     if not included:
         blocks.append("\n\nНовин у форматі короткого огляду поки немає.")
     text = "".join(blocks)
@@ -492,7 +519,7 @@ def digest(slot: str | None = None):
         items = _candidates(db)
         text, ids = compose_digest(items, local, title_transform=lambda title: translate_title(db, title))
         # Exactly one HTML-formatted message per digest, including manual /now.
-        send(text, parse_mode="HTML")
+        send(text, parse_mode="HTML", reply_markup=menu_keyboard())
         when = NOW().isoformat()
         if ids:
             db.executemany("UPDATE events SET last_sent=? WHERE id=?",
@@ -519,6 +546,8 @@ def handle_action(action: str, chat_id: int, update_id: int | str):
         return show_topics(chat_id)
     if action == "sources":
         return show_sources(chat_id)
+    if action == "settings":
+        return show_settings(chat_id)
     if action == "help":
         return show_help(chat_id)
     return show_menu(chat_id)
@@ -553,11 +582,12 @@ def commands():
                 cmd = (message.get("text") or "").split(" ", 1)[0].split("@")[0].lstrip("/")
                 actions = {"now": "news", "start": "start", "menu": "menu",
                            "topics": "topics", "sources": "sources",
-                           "help": "help", "chatid": "chatid"}
+                           "settings": "settings", "help": "help", "chatid": "chatid"}
                 labels = {
                     "📰 Новини зараз": "news",
                     "📚 Теми": "topics",
                     "🔗 Джерела": "sources",
+                    "⚙️ Налаштування": "settings",
                     "ℹ️ Довідка": "help",
                     "🏠 Меню": "menu",
                 }
